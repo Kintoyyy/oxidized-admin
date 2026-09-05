@@ -230,7 +230,7 @@ groups:
     username: admin
     password: password
 
-rest: 0.0.0.0:8080
+rest: 0.0.0.0:8888
 EOF
     info "Created $CONFIG_DIR/config"
 else
@@ -286,6 +286,80 @@ EOF
     else
         warn "oxidized.service may have failed to start. Check: sudo journalctl -u oxidized -n 50"
     fi
+fi
+
+# ============================================================================
+# SECURE OXIDIZED WEB GUI (OPTIONAL NGINX REVERSE PROXY + BASIC AUTH)
+# ============================================================================
+
+section "Secure Oxidized Web GUI"
+
+NGINX_PROXY_ENABLED=false
+
+read -p "Put the Oxidized web GUI (port 8888) behind an Nginx reverse proxy with password protection? [y/N]: " SETUP_NGINX
+if [[ "$SETUP_NGINX" =~ ^[Yy] ]]; then
+    NGINX_PROXY_ENABLED=true
+
+    info "Installing Nginx and Apache utils..."
+    apt install nginx apache2-utils -y
+
+    read -p "Enter a username for the Oxidized web GUI (default: oxidized): " PROXY_USER
+    PROXY_USER=${PROXY_USER:-oxidized}
+
+    read -s -p "Enter a password for '$PROXY_USER': " PROXY_PASS
+    echo
+    while [ ${#PROXY_PASS} -lt 6 ]; do
+        warn "Password must be at least 6 characters"
+        read -s -p "Enter a password for '$PROXY_USER': " PROXY_PASS
+        echo
+    done
+
+    info "Creating password file..."
+    echo "$PROXY_PASS" | htpasswd -ci /etc/nginx/.htpasswd "$PROXY_USER"
+
+    info "Writing Nginx reverse proxy config..."
+    cat > /etc/nginx/sites-available/oxidized << 'EOF'
+server {
+    listen 80;
+    server_name _;
+
+    location / {
+        auth_basic "Oxidized Access";
+        auth_basic_user_file /etc/nginx/.htpasswd;
+
+        proxy_pass http://localhost:8888;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+EOF
+
+    ln -sf /etc/nginx/sites-available/oxidized /etc/nginx/sites-enabled/oxidized
+
+    if [ -f /etc/nginx/sites-enabled/default ]; then
+        rm -f /etc/nginx/sites-enabled/default
+        info "Removed default Nginx site"
+    fi
+
+    info "Testing Nginx configuration..."
+    nginx -t
+
+    systemctl restart nginx
+    systemctl enable nginx
+    info "✓ Nginx reverse proxy configured on port 80"
+
+    info "Restricting Oxidized to listen on localhost only..."
+    if grep -q '^rest:' "$CONFIG_DIR/config"; then
+        sed -i 's/^rest:.*/rest: localhost:8888/' "$CONFIG_DIR/config"
+    else
+        echo 'rest: localhost:8888' >> "$CONFIG_DIR/config"
+    fi
+    systemctl restart oxidized.service
+    info "✓ Oxidized now only reachable via the Nginx proxy (http://<host>/, user: $PROXY_USER)"
+else
+    info "Skipping Nginx setup. Oxidized web GUI stays reachable directly on port 8888."
 fi
 
 # ============================================================================
@@ -425,10 +499,15 @@ section "Firewall Configuration"
 if ufw status | grep -q "Status: active"; then
     info "UFW is active. Adding firewall rules..."
     ufw allow "$APP_PORT/tcp"
-    ufw allow 8080/tcp
-    info "✓ Firewall rules added for $APP_PORT (admin page) and 8080 (Oxidized API)"
+    if [ "$NGINX_PROXY_ENABLED" = true ]; then
+        ufw allow 80/tcp
+        info "✓ Firewall rules added for $APP_PORT (admin page) and 80 (Oxidized web GUI via Nginx)"
+    else
+        ufw allow 8888/tcp
+        info "✓ Firewall rules added for $APP_PORT (admin page) and 8888 (Oxidized web GUI)"
+    fi
 else
-    warn "UFW is not active. You may need to manually allow ports $APP_PORT and 8080"
+    warn "UFW is not active. You may need to manually allow port $APP_PORT (and 80, or 8888 if not using Nginx)"
 fi
 
 # ============================================================================
@@ -482,6 +561,15 @@ echo "  Admin page - Logs:   sudo journalctl -u oxidized-manager -f"
 echo "  Oxidized   - Start:  sudo systemctl start oxidized"
 echo "  Oxidized   - Logs:   sudo journalctl -u oxidized -f"
 echo ""
+if [ "$NGINX_PROXY_ENABLED" = true ]; then
+echo "Oxidized Web GUI (behind Nginx, password protected):"
+echo "  URL:      http://<this-host>/"
+echo "  Username: $PROXY_USER"
+echo ""
+else
+echo "Oxidized Web GUI: http://localhost:8888 (not password protected)"
+echo ""
+fi
 echo "Quick Setup Next Steps:"
 echo "  1. Open http://localhost:$APP_PORT in your browser"
 echo "  2. Log in with your admin credentials"

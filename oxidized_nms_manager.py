@@ -295,7 +295,7 @@ github_client = GitHubBackupClient()
 # OXIDIZED API INTEGRATION
 # ============================================================================
 
-OXIDIZED_API_URL = 'http://localhost:8080/api'
+OXIDIZED_API_URL = 'http://localhost:8888/api'
 
 def get_oxidized_nodes():
     """Fetch device list from Oxidized REST API."""
