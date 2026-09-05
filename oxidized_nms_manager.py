@@ -315,10 +315,11 @@ def get_oxidized_nodes():
         print(f'Oxidized API error: {e}')
         return []
 
-def get_oxidized_node_config(node_name):
+def get_oxidized_node_config(node_name, group='default'):
     """Fetch a node's current config from Oxidized (triggers a live fetch over SSH)."""
     try:
-        response = requests.get(f'{get_oxidized_api_url()}/node/fetch/{node_name}.json', timeout=30)
+        group_seg = f'{group}/' if group else ''
+        response = requests.get(f'{get_oxidized_api_url()}/node/fetch/{group_seg}{node_name}.json', timeout=30)
         response.raise_for_status()
         lines = response.json()
         if isinstance(lines, list):
@@ -328,12 +329,13 @@ def get_oxidized_node_config(node_name):
         print(f'Error fetching config: {e}')
         return None
 
-def get_oxidized_node_history(node_name):
+def get_oxidized_node_history(node_name, group='default'):
     """Fetch a node's stored backup version history from Oxidized."""
+    node_full = f'{group}/{node_name}' if group else node_name
     try:
         response = requests.get(
             f'{get_oxidized_api_url()}/node/version.json',
-            params={'node_full': node_name}, timeout=5
+            params={'node_full': node_full}, timeout=5
         )
         response.raise_for_status()
         return response.json()
@@ -462,7 +464,8 @@ def read_router_db():
                             'username': row[3],
                             'password': row[4],
                             'group': row[5],
-                            'enable': row[6] if len(row) > 6 else ''
+                            'enable': row[6] if len(row) > 6 else '',
+                            'ssh_port': int(row[7]) if len(row) > 7 and row[7] else 22
                         })
     except Exception as e:
         print(f'Error reading router.db: {e}')
@@ -484,7 +487,7 @@ def write_router_db(devices):
                 writer.writerow([
                     dev['name'], dev['ip'], dev['model'],
                     dev['username'], dev['password'], dev['group'],
-                    dev.get('enable', '')
+                    dev.get('enable', ''), dev.get('ssh_port', 22)
                 ])
         
         log_audit('router_db_updated', 'router.db')
@@ -693,9 +696,10 @@ def dashboard():
             'name': node.get('name'),
             'ip': node.get('ip'),
             'model': node.get('model'),
-            'group': node.get('group'),
+            'group': node.get('group') or 'default',
             'status': node.get('status'),
-            'last': node.get('last'),
+            'last_update': node.get('time'),
+            'mtime': node.get('mtime'),
             'metadata': dict(meta) if meta else {}
         })
     conn.close()
@@ -720,13 +724,21 @@ def api_devices():
     oxidized_nodes = get_oxidized_nodes()
     return jsonify({'devices': oxidized_nodes})
 
+def get_device_group(device_name):
+    """Look up a device's group from router.db (falls back to 'default')."""
+    for dev in read_router_db():
+        if dev['name'] == device_name:
+            return dev.get('group') or 'default'
+    return 'default'
+
 @app.route('/device/<device_name>')
 @requires_auth
 def device_detail(device_name):
     """View device details and config."""
-    config = get_oxidized_node_config(device_name)
-    history = get_oxidized_node_history(device_name)
-    
+    group = get_device_group(device_name)
+    config = get_oxidized_node_config(device_name, group)
+    history = get_oxidized_node_history(device_name, group)
+
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
@@ -734,9 +746,10 @@ def device_detail(device_name):
               (device_name,))
     backups = [dict(row) for row in c.fetchall()]
     conn.close()
-    
+
     return render_template_string(DEVICE_DETAIL_TEMPLATE,
                                   device_name=device_name,
+                                  device_group=group,
                                   config=config,
                                   history=history,
                                   backups=backups)
@@ -745,10 +758,38 @@ def device_detail(device_name):
 @requires_auth
 def get_device_config(device_name):
     """Fetch device config (API endpoint)."""
-    config = get_oxidized_node_config(device_name)
+    config = get_oxidized_node_config(device_name, get_device_group(device_name))
     if not config:
         return jsonify({'error': 'Config not found'}), 404
     return config, 200, {'Content-Type': 'text/plain'}
+
+@app.route('/api/oxidized/fetch/<device_name>', methods=['POST'])
+@requires_auth
+def api_oxidized_fetch(device_name):
+    """Trigger a live config fetch for a device (used by the 'Update Configuration' button)."""
+    group = get_device_group(device_name)
+    config = get_oxidized_node_config(device_name, group)
+    if config is None:
+        return jsonify({'status': 'error', 'message': 'Failed to fetch configuration from Oxidized'}), 500
+    log_audit('device_config_updated', 'device', device_name)
+    return jsonify({'status': 'success', 'message': 'Configuration updated', 'content': config})
+
+@app.route('/api/oxidized/version-content')
+@requires_auth
+def api_oxidized_version_content():
+    """Proxy: fetch a specific stored config version's raw content from Oxidized.
+    Forwards whatever query params the caller sends straight through to
+    oxidized-web's /node/version/view.json, since the exact set of fields
+    (oid/epoch/num/group/node) is whatever that version's own history entry carried."""
+    params = {k: v for k, v in request.args.items()}
+    try:
+        response = requests.get(f'{get_oxidized_api_url()}/node/version/view.json', params=params, timeout=15)
+        response.raise_for_status()
+        data = response.json()
+        content = ''.join(data) if isinstance(data, list) else str(data)
+        return jsonify({'status': 'success', 'content': content})
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
 
 # ============================================================================
 # ROUTES - MANAGEMENT
@@ -1409,41 +1450,34 @@ DASHBOARD_TEMPLATE = '''<!DOCTYPE html>
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
         }
-        .devices-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-            gap: 1rem;
-        }
-        .device-card {
+        table.devices-table {
+            width: 100%;
+            border-collapse: collapse;
             background: #1e293b;
             border: 1px solid #334155;
             border-radius: 8px;
-            padding: 1rem;
-            transition: all 0.2s;
+            overflow: hidden;
         }
-        .device-card:hover {
-            border-color: #3b82f6;
-            box-shadow: 0 0 12px rgba(59, 130, 246, 0.1);
-        }
-        .device-card.status-success {
-            border-left: 3px solid #10b981;
-        }
-        .device-card.status-error {
-            border-left: 3px solid #ef4444;
-        }
-        .device-card.status-error-gray {
-            border-left: 3px solid #64748b;
-        }
-        .device-name {
-            font-weight: 600;
+        table.devices-table th, table.devices-table td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #334155;
             font-size: 14px;
-            margin-bottom: 0.5rem;
+        }
+        table.devices-table th {
+            background: #334155;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            font-size: 12px;
+        }
+        table.devices-table tr:hover td {
+            background: #26344a;
         }
         .device-ip {
             font-family: monospace;
             font-size: 12px;
             color: #64748b;
-            margin-bottom: 1rem;
         }
         .status-badge {
             display: inline-block;
@@ -1522,29 +1556,73 @@ DASHBOARD_TEMPLATE = '''<!DOCTYPE html>
             </div>
         </div>
         
-        <div class="devices-grid">
-            {% for device in devices %}
-            <div class="device-card status-{{ device.status or 'error-gray' }}">
-                <div class="device-name">{{ device.name }}</div>
-                <div class="device-ip">{{ device.ip }}</div>
-                <div style="font-size: 12px; color: #cbd5e1; margin-bottom: 1rem;">
-                    <div><strong>Model:</strong> {{ device.model }}</div>
-                    <div><strong>Group:</strong> {{ device.group }}</div>
-                    <div><strong>Last backup:</strong> {{ device.last or 'never' }}</div>
-                </div>
-                <span class="status-badge status-{{ device.status or 'pending' }}">
-                    {{ device.status or 'unknown' }}
-                </span>
-                <div class="device-actions">
-                    <a href="{{ url_for('device_detail', device_name=device.name) }}" class="btn">View</a>
-                    <form style="display: inline;">
+        <table class="devices-table">
+            <thead>
+                <tr>
+                    <th>Name</th>
+                    <th>Model</th>
+                    <th>Group</th>
+                    <th>Last Status</th>
+                    <th>Last Update</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for device in devices %}
+                <tr>
+                    <td>
+                        <div><strong>{{ device.name }}</strong></div>
+                        <div class="device-ip">{{ device.ip }}</div>
+                    </td>
+                    <td>{{ device.model or '-' }}</td>
+                    <td>{{ device.group or 'default' }}</td>
+                    <td>
+                        <span class="status-badge status-{{ device.status or 'pending' }}">
+                            {{ device.status or 'unknown' }}
+                        </span>
+                    </td>
+                    <td class="device-last-update" data-value="{{ device.last_update or '' }}">{{ device.last_update or 'never' }}</td>
+                    <td>
+                        <a href="{{ url_for('device_detail', device_name=device.name) }}" class="btn">View</a>
                         <button type="button" class="btn" onclick="location.href='{{ url_for('manage_devices') }}';">Edit</button>
-                    </form>
-                </div>
-            </div>
-            {% endfor %}
-        </div>
+                        <button type="button" class="btn" id="update-btn-{{ loop.index0 }}" onclick="updateDeviceNow('{{ device.name }}', {{ loop.index0 }})">Update</button>
+                        <span id="update-result-{{ loop.index0 }}" style="font-size: 12px; margin-left: 0.5rem;"></span>
+                    </td>
+                </tr>
+                {% else %}
+                <tr><td colspan="6">No devices found. Sync from LibreNMS or add one from the Devices page.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
     </div>
+
+    <script>
+    function updateDeviceNow(name, idx) {
+        var btn = document.getElementById('update-btn-' + idx);
+        var result = document.getElementById('update-result-' + idx);
+        btn.disabled = true;
+        result.style.color = '#cbd5e1';
+        result.textContent = '⏳ updating...';
+
+        fetch('/api/oxidized/fetch/' + encodeURIComponent(name), { method: 'POST' })
+            .then(response => response.json().then(data => ({ ok: response.ok, data: data })))
+            .then(({ ok, data }) => {
+                if (ok && data.status === 'success') {
+                    result.style.color = '#10b981';
+                    result.textContent = '✓ updated';
+                } else {
+                    result.style.color = '#f87171';
+                    result.textContent = '✗ ' + data.message;
+                }
+                btn.disabled = false;
+            })
+            .catch(err => {
+                result.style.color = '#f87171';
+                result.textContent = '✗ ' + err;
+                btn.disabled = false;
+            });
+    }
+    </script>
 </body>
 </html>'''
 
@@ -1631,30 +1709,118 @@ DEVICE_DETAIL_TEMPLATE = '''<!DOCTYPE html>
             color: #64748b;
             font-size: 12px;
         }
+        .btn {
+            padding: 8px 14px;
+            background: #2563eb;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 13px;
+        }
+        .btn:hover {
+            background: #1d4ed8;
+        }
+        .btn:disabled {
+            opacity: 0.6;
+            cursor: default;
+        }
+        table.versions-table {
+            width: 100%;
+            border-collapse: collapse;
+            background: #1e293b;
+            border: 1px solid #334155;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        table.versions-table th, table.versions-table td {
+            padding: 10px 12px;
+            text-align: left;
+            border-bottom: 1px solid #334155;
+            font-size: 13px;
+        }
+        table.versions-table th {
+            background: #334155;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            font-size: 11px;
+        }
+        .action-btn {
+            padding: 5px 10px;
+            background: transparent;
+            border: 1px solid #334155;
+            color: #3b82f6;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+        }
+        .action-btn:hover {
+            background: #334155;
+        }
+        #version-content {
+            display: none;
+            margin-top: 1rem;
+            background: #0f172a;
+            border: 1px solid #334155;
+            border-radius: 8px;
+            padding: 1.5rem;
+            font-family: monospace;
+            font-size: 12px;
+            white-space: pre-wrap;
+            word-break: break-all;
+            max-height: 500px;
+            overflow-y: auto;
+            color: #e2e8f0;
+        }
     </style>
 </head>
 <body>
     <div class="navbar">
         <a href="{{ url_for('dashboard') }}">← Back to Dashboard</a>
     </div>
-    
+
     <div class="container">
         <h1>{{ device_name }}</h1>
-        
+
         <div class="tabs">
             <button class="tab active" onclick="showTab('config')">Config</button>
-            <button class="tab" onclick="showTab('history')">History</button>
+            <button class="tab" onclick="showTab('history')">Versions</button>
             <button class="tab" onclick="showTab('backups')">Backups</button>
         </div>
-        
+
         <div id="config" class="tab-content active">
-            <div class="config-viewer">{{ config or 'No configuration found' }}</div>
+            <div style="margin-bottom: 1rem; display: flex; align-items: center; gap: 1rem;">
+                <button class="btn" id="update-config-btn" onclick="updateConfig()">Update Configuration</button>
+                <span id="update-config-result" style="font-size: 13px;"></span>
+            </div>
+            <div class="config-viewer" id="config-viewer">{{ config or 'No configuration found' }}</div>
         </div>
-        
+
         <div id="history" class="tab-content">
-            <pre>{{ history|tojson }}</pre>
+            <table class="versions-table">
+                <thead>
+                    <tr><th>Version</th><th>Date</th><th>Actions</th></tr>
+                </thead>
+                <tbody>
+                {% for v in history %}
+                    <tr>
+                        <td>{{ v.num if v.num is defined else loop.index }}</td>
+                        <td class="version-date" data-epoch="{{ v.epoch if v.epoch is defined else '' }}">
+                            {{ v.epoch if v.epoch is defined else (v.date if v.date is defined else '-') }}
+                        </td>
+                        <td>
+                            <button class="action-btn" onclick='viewVersion({{ v|tojson }})'>View</button>
+                        </td>
+                    </tr>
+                {% else %}
+                    <tr><td colspan="3">No version history yet</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+            <div id="version-content"></div>
         </div>
-        
+
         <div id="backups" class="tab-content">
             {% for backup in backups %}
             <div class="backup-item">
@@ -1662,10 +1828,12 @@ DEVICE_DETAIL_TEMPLATE = '''<!DOCTYPE html>
                 <div>Status: {{ backup.status }}</div>
                 <div>Size: {{ backup.file_size }} bytes</div>
             </div>
+            {% else %}
+            <div style="color: #64748b;">No local backup records yet</div>
             {% endfor %}
         </div>
     </div>
-    
+
     <script>
     function showTab(tabName) {
         document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
@@ -1673,6 +1841,62 @@ DEVICE_DETAIL_TEMPLATE = '''<!DOCTYPE html>
         document.getElementById(tabName).classList.add('active');
         event.target.classList.add('active');
     }
+
+    function updateConfig() {
+        var btn = document.getElementById('update-config-btn');
+        var result = document.getElementById('update-config-result');
+        var viewer = document.getElementById('config-viewer');
+        btn.disabled = true;
+        result.style.color = '#cbd5e1';
+        result.textContent = '⏳ Fetching latest config from device...';
+
+        fetch('{{ url_for("api_oxidized_fetch", device_name=device_name) }}', { method: 'POST' })
+            .then(response => response.json().then(data => ({ ok: response.ok, data: data })))
+            .then(({ ok, data }) => {
+                if (ok && data.status === 'success') {
+                    result.style.color = '#10b981';
+                    result.textContent = '✓ ' + data.message;
+                    viewer.textContent = data.content || 'No configuration found';
+                } else {
+                    result.style.color = '#f87171';
+                    result.textContent = '✗ ' + data.message;
+                }
+                btn.disabled = false;
+            })
+            .catch(err => {
+                result.style.color = '#f87171';
+                result.textContent = '✗ ' + err;
+                btn.disabled = false;
+            });
+    }
+
+    function viewVersion(v) {
+        var out = document.getElementById('version-content');
+        out.style.display = 'block';
+        out.textContent = 'Loading...';
+
+        var params = new URLSearchParams();
+        params.append('node', {{ device_name|tojson }});
+        params.append('group', {{ device_group|tojson }});
+        Object.keys(v).forEach(function(k) {
+            if (v[k] !== null && v[k] !== undefined) params.append(k, v[k]);
+        });
+
+        fetch('{{ url_for("api_oxidized_version_content") }}?' + params.toString())
+            .then(response => response.json())
+            .then(data => {
+                out.textContent = data.status === 'success' ? data.content : ('Error: ' + data.message);
+            })
+            .catch(err => { out.textContent = 'Request failed: ' + err; });
+    }
+
+    document.querySelectorAll('.version-date').forEach(function(el) {
+        var epoch = el.getAttribute('data-epoch');
+        if (epoch && !isNaN(parseFloat(epoch))) {
+            var d = new Date(parseFloat(epoch) * 1000);
+            if (!isNaN(d.getTime())) el.textContent = d.toLocaleString();
+        }
+    });
     </script>
 </body>
 </html>'''
@@ -1833,26 +2057,27 @@ DEVICE_MANAGEMENT_TEMPLATE = '''<!DOCTYPE html>
         </div>
         
         <div id="add-form" class="form-section" style="display: none;">
-            <h3 style="margin-bottom: 1rem;">Add New Device</h3>
-            <form method="POST" id="add-device-form">
-                <input type="hidden" name="action" value="add">
+            <h3 id="form-title" style="margin-bottom: 1rem;">Add New Device</h3>
+            <form method="POST" id="device-form">
+                <input type="hidden" name="action" id="form-action" value="add">
                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem;">
-                    <input type="text" name="name" placeholder="Device Name" required>
-                    <input type="text" name="ip" placeholder="IP Address (10.25.1.1)" required>
-                    <input type="text" name="model" placeholder="Model (RouterOS, Cisco IOS, JunOS)">
-                    <input type="text" name="username" placeholder="SSH Username">
-                    <input type="password" name="password" placeholder="SSH Password">
-                    <select name="group" required>
+                    <input type="text" name="name" id="field-name" placeholder="Device Name" required>
+                    <input type="text" name="ip" id="field-ip" placeholder="IP Address (10.25.1.1)" required>
+                    <input type="text" name="model" id="field-model" placeholder="Model (RouterOS, Cisco IOS, JunOS)">
+                    <input type="text" name="username" id="field-username" placeholder="SSH Username">
+                    <input type="password" name="password" id="field-password" placeholder="SSH Password">
+                    <select name="group" id="field-group" required>
+                        {% for g in groups %}
+                        <option value="{{ g }}">{{ g }}</option>
+                        {% else %}
                         <option value="default">default</option>
-                        <option value="jdm-hernani">jdm-hernani</option>
-                        <option value="kgcis-mandaue">kgcis-mandaue</option>
-                        <option value="jsvartech-camiguin">jsvartech-camiguin</option>
+                        {% endfor %}
                     </select>
-                    <input type="number" name="ssh_port" placeholder="SSH Port" value="22" min="1" max="65535">
+                    <input type="number" name="ssh_port" id="field-ssh_port" placeholder="SSH Port" value="22" min="1" max="65535">
                 </div>
                 <div style="display: flex; gap: 0.5rem;">
                     <button type="submit" class="btn">Save Device</button>
-                    <button type="button" class="btn btn-secondary" onclick="showAddForm()">Cancel</button>
+                    <button type="button" class="btn btn-secondary" onclick="hideForm()">Cancel</button>
                 </div>
             </form>
         </div>
@@ -1878,7 +2103,7 @@ DEVICE_MANAGEMENT_TEMPLATE = '''<!DOCTYPE html>
                     <td>{{ device.get('ssh_port', 22) }}</td>
                     <td>
                         <button class="action-btn test" onclick="testSSH('{{ device.name }}', '{{ device.ip }}', '{{ device.username }}', '{{ device.password }}', {{ device.get('ssh_port', 22) }})">Test SSH</button>
-                        <button class="action-btn" onclick="editDevice('{{ device.ip }}')">Edit</button>
+                        <button class="action-btn" onclick='editDevice({{ device|tojson }})'>Edit</button>
                         <form method="POST" style="display: inline;">
                             <input type="hidden" name="action" value="delete">
                             <input type="hidden" name="ip" value="{{ device.ip }}">
@@ -1895,11 +2120,43 @@ DEVICE_MANAGEMENT_TEMPLATE = '''<!DOCTYPE html>
     </div>
     
     <script>
+    function resetForm() {
+        document.getElementById('device-form').reset();
+        document.getElementById('form-action').value = 'add';
+        document.getElementById('field-ip').readOnly = false;
+        document.getElementById('form-title').textContent = 'Add New Device';
+    }
+
     function showAddForm() {
         var form = document.getElementById('add-form');
-        form.style.display = form.style.display === 'none' ? 'block' : 'none';
+        if (form.style.display === 'none') {
+            resetForm();
+            form.style.display = 'block';
+        } else {
+            form.style.display = 'none';
+        }
     }
-    
+
+    function hideForm() {
+        document.getElementById('add-form').style.display = 'none';
+    }
+
+    function editDevice(device) {
+        document.getElementById('form-action').value = 'update';
+        document.getElementById('form-title').textContent = 'Edit Device: ' + device.name;
+        document.getElementById('field-name').value = device.name || '';
+        document.getElementById('field-ip').value = device.ip || '';
+        document.getElementById('field-ip').readOnly = true;
+        document.getElementById('field-model').value = device.model || '';
+        document.getElementById('field-username').value = device.username || '';
+        document.getElementById('field-password').value = device.password || '';
+        document.getElementById('field-group').value = device.group || 'default';
+        document.getElementById('field-ssh_port').value = device.ssh_port || 22;
+        var form = document.getElementById('add-form');
+        form.style.display = 'block';
+        form.scrollIntoView({ behavior: 'smooth' });
+    }
+
     function testSSH(name, ip, username, password, port) {
         var idx = Array.from(document.querySelectorAll('[id^="test-result-"]')).length - 1;
         var resultRow = document.querySelector('[id="test-result-' + (Array.from(document.querySelectorAll('[id^="test-result-"]')).indexOf(document.getElementById('test-result-' + idx))) + '"]') || 

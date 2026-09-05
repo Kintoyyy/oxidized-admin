@@ -592,7 +592,7 @@ fi
 
 section "Starting Admin Page Service"
 
-systemctl start oxidized-manager.service
+systemctl restart oxidized-manager.service
 sleep 2
 
 if systemctl is-active --quiet oxidized-manager.service; then
