@@ -1976,7 +1976,7 @@ DEVICE_DETAIL_TEMPLATE = '''<!DOCTYPE html>
         .action-btn:hover {
             background: #334155;
         }
-        #version-content, #diff-content {
+        #version-content {
             display: none;
             margin-top: 1rem;
             background: #0f172a;
@@ -1988,6 +1988,39 @@ DEVICE_DETAIL_TEMPLATE = '''<!DOCTYPE html>
             white-space: pre-wrap;
             word-break: break-all;
             max-height: 500px;
+            overflow-y: auto;
+            color: #e2e8f0;
+        }
+        .diff-picker {
+            background: #1e293b;
+            border: 1px solid #334155;
+            border-radius: 8px;
+            padding: 1rem 1.25rem;
+            margin-top: 1.5rem;
+        }
+        .diff-picker select {
+            padding: 6px 10px;
+            background: #0f172a;
+            border: 1px solid #334155;
+            border-radius: 6px;
+            color: #f1f5f9;
+            font-size: 13px;
+            min-width: 220px;
+        }
+        #diff-content {
+            display: none;
+            margin-top: 1rem;
+        }
+        .diff-pane {
+            background: #0f172a;
+            border: 1px solid #334155;
+            border-radius: 8px;
+            padding: 1rem;
+            font-family: monospace;
+            font-size: 12px;
+            white-space: pre-wrap;
+            word-break: break-all;
+            max-height: 600px;
             overflow-y: auto;
             color: #e2e8f0;
         }
@@ -2039,7 +2072,6 @@ DEVICE_DETAIL_TEMPLATE = '''<!DOCTYPE html>
                         </td>
                         <td>
                             <button class="action-btn" onclick='viewVersion({{ v|tojson }})'>View</button>
-                            <button class="action-btn" onclick='diffVersion({{ v|tojson }})'>Diff vs previous</button>
                         </td>
                     </tr>
                 {% else %}
@@ -2054,7 +2086,34 @@ DEVICE_DETAIL_TEMPLATE = '''<!DOCTYPE html>
                     <button class="btn" onclick="downloadContent('version-content', '{{ device_name }}-version.conf')">Download</button>
                 </div>
             </div>
-            <div id="diff-content"></div>
+
+            <div class="diff-picker">
+                <h3 style="font-size: 14px; margin-bottom: 0.75rem;">Compare Versions</h3>
+                <div style="display: flex; gap: 1rem; align-items: flex-end; flex-wrap: wrap;">
+                    <div>
+                        <label style="display:block; font-size:12px; color:#94a3b8; margin-bottom:4px;">Version</label>
+                        <select id="diff-select-a"></select>
+                    </div>
+                    <div>
+                        <label style="display:block; font-size:12px; color:#94a3b8; margin-bottom:4px;">Compared against</label>
+                        <select id="diff-select-b"></select>
+                    </div>
+                    <button class="btn" onclick="compareDiffs()">Get Diffs</button>
+                </div>
+            </div>
+
+            <div id="diff-content">
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+                    <div>
+                        <div id="diff-label-old" style="font-size: 12px; color: #94a3b8; margin-bottom: 0.4rem;"></div>
+                        <div class="diff-pane" id="diff-old"></div>
+                    </div>
+                    <div>
+                        <div id="diff-label-new" style="font-size: 12px; color: #94a3b8; margin-bottom: 0.4rem;"></div>
+                        <div class="diff-pane" id="diff-new"></div>
+                    </div>
+                </div>
+            </div>
         </div>
 
         <div id="backups" class="tab-content">
@@ -2133,33 +2192,104 @@ DEVICE_DETAIL_TEMPLATE = '''<!DOCTYPE html>
             .catch(err => { out.textContent = 'Request failed: ' + err; });
     }
 
-    function diffVersion(v) {
+    var HISTORY = {{ history|tojson }};
+
+    function versionLabel(v, idx) {
+        var num = (v && v.num !== undefined) ? v.num : (idx + 1);
+        var when = (v && v.epoch !== undefined) ? new Date(parseFloat(v.epoch) * 1000).toLocaleString()
+                 : (v && v.date !== undefined ? v.date : '');
+        return 'Version ' + num + (when ? ' - ' + when : '');
+    }
+
+    function initDiffPickers() {
+        var a = document.getElementById('diff-select-a');
+        var b = document.getElementById('diff-select-b');
+        HISTORY.forEach(function(v, idx) {
+            var optA = document.createElement('option');
+            optA.value = idx;
+            optA.textContent = versionLabel(v, idx);
+            a.appendChild(optA);
+            b.appendChild(optA.cloneNode(true));
+        });
+        if (HISTORY.length > 0) a.value = 0;
+        if (HISTORY.length > 1) b.value = 1;
+    }
+    initDiffPickers();
+
+    function renderSideBySide(diffText) {
+        var lines = diffText.split('\\n');
+        var oldLines = [], newLines = [];
+        lines.forEach(function(line) {
+            if (line.startsWith('+') && !line.startsWith('+++')) {
+                newLines.push(line);
+            } else if (line.startsWith('-') && !line.startsWith('---')) {
+                oldLines.push(line);
+            } else {
+                newLines.push(line);
+                oldLines.push(line);
+            }
+        });
+        var i = 0;
+        while (i <= Math.max(oldLines.length, newLines.length)) {
+            if (i > Math.min(oldLines.length, newLines.length)) break;
+            var oldLine = oldLines[i], newLine = newLines[i];
+            var oldRemoved = oldLine !== undefined && oldLine.startsWith('-') && !oldLine.startsWith('---');
+            var newAdded = newLine !== undefined && newLine.startsWith('+') && !newLine.startsWith('+++');
+            if (oldRemoved && !newAdded) {
+                newLines.splice(i, 0, '');
+            } else if (!oldRemoved && newAdded) {
+                oldLines.splice(i, 0, '');
+            }
+            i++;
+        }
+
+        function fill(container, arr) {
+            container.innerHTML = '';
+            arr.forEach(function(line) {
+                var div = document.createElement('div');
+                if (line.startsWith('+') && !line.startsWith('+++')) div.className = 'diff-add';
+                else if (line.startsWith('-') && !line.startsWith('---')) div.className = 'diff-remove';
+                div.textContent = line || '\\u00A0';
+                container.appendChild(div);
+            });
+        }
+        fill(document.getElementById('diff-old'), oldLines);
+        fill(document.getElementById('diff-new'), newLines);
+    }
+
+    function compareDiffs() {
+        var a = document.getElementById('diff-select-a');
+        var b = document.getElementById('diff-select-b');
+        if (a.value === '' || b.value === '') return;
+        var idxA = parseInt(a.value, 10), idxB = parseInt(b.value, 10);
+        var vA = HISTORY[idxA], vB = HISTORY[idxB];
+
         document.getElementById('version-content').style.display = 'none';
         document.getElementById('version-content-actions').style.display = 'none';
+
         var out = document.getElementById('diff-content');
         out.style.display = 'block';
-        out.textContent = 'Loading diff...';
+        document.getElementById('diff-label-old').textContent = versionLabel(vB, idxB) + ' (compared against)';
+        document.getElementById('diff-label-new').textContent = versionLabel(vA, idxA) + ' (selected)';
+        document.getElementById('diff-old').textContent = 'Loading...';
+        document.getElementById('diff-new').textContent = '';
 
-        fetch('{{ url_for("api_oxidized_diff") }}?' + versionParams(v).toString())
+        var params = versionParams(vA);
+        if (vB && vB.oid !== undefined && vB.oid !== null) params.append('oid2', vB.oid);
+
+        fetch('{{ url_for("api_oxidized_diff") }}?' + params.toString())
             .then(response => response.json())
             .then(data => {
                 if (data.status !== 'success') {
-                    out.textContent = 'Error: ' + data.message;
+                    document.getElementById('diff-old').textContent = 'Error: ' + data.message;
+                    document.getElementById('diff-new').textContent = '';
                     return;
                 }
-                out.innerHTML = '';
-                data.content.split('\\n').forEach(function(line) {
-                    var div = document.createElement('div');
-                    if (line.startsWith('+') && !line.startsWith('+++')) {
-                        div.className = 'diff-add';
-                    } else if (line.startsWith('-') && !line.startsWith('---')) {
-                        div.className = 'diff-remove';
-                    }
-                    div.textContent = line || ' ';
-                    out.appendChild(div);
-                });
+                renderSideBySide(data.content);
             })
-            .catch(err => { out.textContent = 'Request failed: ' + err; });
+            .catch(err => {
+                document.getElementById('diff-old').textContent = 'Request failed: ' + err;
+            });
     }
 
     function rawView(elementId, filename) {
