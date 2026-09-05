@@ -343,6 +343,26 @@ def get_oxidized_node_history(node_name, group='default'):
         print(f'Error fetching history: {e}')
         return []
 
+def get_oxidized_stats():
+    """Fetch per-node run stats from Oxidized (oxidized-web's /nodes/stats.json)."""
+    try:
+        response = requests.get(f'{get_oxidized_api_url()}/nodes/stats.json', timeout=5)
+        response.raise_for_status()
+        return response.json()
+    except Exception as e:
+        print(f'Oxidized stats API error: {e}')
+        return {}
+
+def _stat_value(stats, *keys):
+    """Return the first matching key's value from a stats dict, trying several
+    likely spellings since Oxidized's exact stats schema isn't pinned down."""
+    if not isinstance(stats, dict):
+        return None
+    for k in keys:
+        if k in stats and stats[k] is not None:
+            return stats[k]
+    return None
+
 # ============================================================================
 # LIBRENMS API INTEGRATION
 # ============================================================================
@@ -681,17 +701,19 @@ def setup():
 def dashboard():
     """Main NOC dashboard."""
     oxidized_nodes = get_oxidized_nodes()
-    
+    oxidized_stats = get_oxidized_stats()
+
     # Enrich with metadata and LibreNMS data
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
-    
+
     devices = []
     for node in oxidized_nodes:
         c.execute('SELECT * FROM device_metadata WHERE device_ip = ?', (node.get('ip'),))
         meta = c.fetchone()
-        
+        node_stats = oxidized_stats.get(node.get('name'), {}) if isinstance(oxidized_stats, dict) else {}
+
         devices.append({
             'name': node.get('name'),
             'ip': node.get('ip'),
@@ -700,7 +722,11 @@ def dashboard():
             'status': node.get('status'),
             'last_update': node.get('time'),
             'mtime': node.get('mtime'),
-            'metadata': dict(meta) if meta else {}
+            'metadata': dict(meta) if meta else {},
+            'total_failures': _stat_value(node_stats, 'total_failures', 'failures', 'fail_count'),
+            'avg_run_time': _stat_value(node_stats, 'average_run_time', 'avg_run_time', 'avg_time'),
+            'last_failure': _stat_value(node_stats, 'last_failure', 'last_fail'),
+            'stats_raw': node_stats
         })
     conn.close()
     
@@ -784,6 +810,24 @@ def api_oxidized_version_content():
     params = {k: v for k, v in request.args.items()}
     try:
         response = requests.get(f'{get_oxidized_api_url()}/node/version/view.json', params=params, timeout=15)
+        response.raise_for_status()
+        data = response.json()
+        content = ''.join(data) if isinstance(data, list) else str(data)
+        return jsonify({'status': 'success', 'content': content})
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+@app.route('/api/oxidized/diff')
+@requires_auth
+def api_oxidized_diff():
+    """Proxy: diff a stored version against the one immediately before it,
+    via oxidized-web's /node/version/diffs. Forwards whatever params the
+    caller sends (node/group/oid/epoch/num from that version's own history
+    entry) and forces JSON output, since this route has no .json path form."""
+    params = {k: v for k, v in request.args.items()}
+    params['format'] = 'json'
+    try:
+        response = requests.get(f'{get_oxidized_api_url()}/node/version/diffs', params=params, timeout=15)
         response.raise_for_status()
         data = response.json()
         content = ''.join(data) if isinstance(data, list) else str(data)
@@ -1564,6 +1608,10 @@ DASHBOARD_TEMPLATE = '''<!DOCTYPE html>
                     <th>Group</th>
                     <th>Last Status</th>
                     <th>Last Update</th>
+                    <th>Last Changed</th>
+                    <th>Failures</th>
+                    <th>Avg Run Time</th>
+                    <th>Last Failure</th>
                     <th>Actions</th>
                 </tr>
             </thead>
@@ -1582,6 +1630,10 @@ DASHBOARD_TEMPLATE = '''<!DOCTYPE html>
                         </span>
                     </td>
                     <td class="device-last-update" data-value="{{ device.last_update or '' }}">{{ device.last_update or 'never' }}</td>
+                    <td title="{{ device.stats_raw|tojson }}">{{ device.mtime or 'unknown' }}</td>
+                    <td title="{{ device.stats_raw|tojson }}">{{ device.total_failures if device.total_failures is not none else '-' }}</td>
+                    <td title="{{ device.stats_raw|tojson }}">{{ device.avg_run_time if device.avg_run_time is not none else '-' }}</td>
+                    <td title="{{ device.stats_raw|tojson }}">{{ device.last_failure if device.last_failure is not none else 'never' }}</td>
                     <td>
                         <a href="{{ url_for('device_detail', device_name=device.name) }}" class="btn">View</a>
                         <button type="button" class="btn" onclick="location.href='{{ url_for('manage_devices') }}';">Edit</button>
@@ -1590,7 +1642,7 @@ DASHBOARD_TEMPLATE = '''<!DOCTYPE html>
                     </td>
                 </tr>
                 {% else %}
-                <tr><td colspan="6">No devices found. Sync from LibreNMS or add one from the Devices page.</td></tr>
+                <tr><td colspan="9">No devices found. Sync from LibreNMS or add one from the Devices page.</td></tr>
                 {% endfor %}
             </tbody>
         </table>
@@ -1692,6 +1744,8 @@ DEVICE_DETAIL_TEMPLATE = '''<!DOCTYPE html>
             padding: 1.5rem;
             font-family: monospace;
             font-size: 12px;
+            white-space: pre-wrap;
+            word-break: break-word;
             overflow-x: auto;
             max-height: 600px;
             overflow-y: auto;
@@ -1758,7 +1812,7 @@ DEVICE_DETAIL_TEMPLATE = '''<!DOCTYPE html>
         .action-btn:hover {
             background: #334155;
         }
-        #version-content {
+        #version-content, #diff-content {
             display: none;
             margin-top: 1rem;
             background: #0f172a;
@@ -1772,6 +1826,14 @@ DEVICE_DETAIL_TEMPLATE = '''<!DOCTYPE html>
             max-height: 500px;
             overflow-y: auto;
             color: #e2e8f0;
+        }
+        .diff-add {
+            background: rgba(16, 185, 129, 0.15);
+            color: #6ee7b7;
+        }
+        .diff-remove {
+            background: rgba(239, 68, 68, 0.15);
+            color: #fca5a5;
         }
     </style>
 </head>
@@ -1792,6 +1854,8 @@ DEVICE_DETAIL_TEMPLATE = '''<!DOCTYPE html>
         <div id="config" class="tab-content active">
             <div style="margin-bottom: 1rem; display: flex; align-items: center; gap: 1rem;">
                 <button class="btn" id="update-config-btn" onclick="updateConfig()">Update Configuration</button>
+                <button class="btn" onclick="rawView('config-viewer', '{{ device_name }}.conf')">Raw</button>
+                <button class="btn" onclick="downloadContent('config-viewer', '{{ device_name }}.conf')">Download</button>
                 <span id="update-config-result" style="font-size: 13px;"></span>
             </div>
             <div class="config-viewer" id="config-viewer">{{ config or 'No configuration found' }}</div>
@@ -1811,6 +1875,7 @@ DEVICE_DETAIL_TEMPLATE = '''<!DOCTYPE html>
                         </td>
                         <td>
                             <button class="action-btn" onclick='viewVersion({{ v|tojson }})'>View</button>
+                            <button class="action-btn" onclick='diffVersion({{ v|tojson }})'>Diff vs previous</button>
                         </td>
                     </tr>
                 {% else %}
@@ -1819,6 +1884,13 @@ DEVICE_DETAIL_TEMPLATE = '''<!DOCTYPE html>
                 </tbody>
             </table>
             <div id="version-content"></div>
+            <div>
+                <div id="version-content-actions" style="display: none; margin-top: 0.5rem;">
+                    <button class="btn" onclick="rawView('version-content', '{{ device_name }}-version.conf')">Raw</button>
+                    <button class="btn" onclick="downloadContent('version-content', '{{ device_name }}-version.conf')">Download</button>
+                </div>
+            </div>
+            <div id="diff-content"></div>
         </div>
 
         <div id="backups" class="tab-content">
@@ -1870,24 +1942,81 @@ DEVICE_DETAIL_TEMPLATE = '''<!DOCTYPE html>
             });
     }
 
-    function viewVersion(v) {
-        var out = document.getElementById('version-content');
-        out.style.display = 'block';
-        out.textContent = 'Loading...';
-
+    function versionParams(v) {
         var params = new URLSearchParams();
         params.append('node', {{ device_name|tojson }});
         params.append('group', {{ device_group|tojson }});
         Object.keys(v).forEach(function(k) {
             if (v[k] !== null && v[k] !== undefined) params.append(k, v[k]);
         });
+        return params;
+    }
 
-        fetch('{{ url_for("api_oxidized_version_content") }}?' + params.toString())
+    function viewVersion(v) {
+        document.getElementById('diff-content').style.display = 'none';
+        var out = document.getElementById('version-content');
+        var actions = document.getElementById('version-content-actions');
+        out.style.display = 'block';
+        out.textContent = 'Loading...';
+        actions.style.display = 'none';
+
+        fetch('{{ url_for("api_oxidized_version_content") }}?' + versionParams(v).toString())
             .then(response => response.json())
             .then(data => {
                 out.textContent = data.status === 'success' ? data.content : ('Error: ' + data.message);
+                if (data.status === 'success') actions.style.display = 'block';
             })
             .catch(err => { out.textContent = 'Request failed: ' + err; });
+    }
+
+    function diffVersion(v) {
+        document.getElementById('version-content').style.display = 'none';
+        document.getElementById('version-content-actions').style.display = 'none';
+        var out = document.getElementById('diff-content');
+        out.style.display = 'block';
+        out.textContent = 'Loading diff...';
+
+        fetch('{{ url_for("api_oxidized_diff") }}?' + versionParams(v).toString())
+            .then(response => response.json())
+            .then(data => {
+                if (data.status !== 'success') {
+                    out.textContent = 'Error: ' + data.message;
+                    return;
+                }
+                out.innerHTML = '';
+                data.content.split('\n').forEach(function(line) {
+                    var div = document.createElement('div');
+                    if (line.startsWith('+') && !line.startsWith('+++')) {
+                        div.className = 'diff-add';
+                    } else if (line.startsWith('-') && !line.startsWith('---')) {
+                        div.className = 'diff-remove';
+                    }
+                    div.textContent = line || ' ';
+                    out.appendChild(div);
+                });
+            })
+            .catch(err => { out.textContent = 'Request failed: ' + err; });
+    }
+
+    function rawView(elementId, filename) {
+        var text = document.getElementById(elementId).textContent;
+        var blob = new Blob([text], { type: 'text/plain' });
+        var url = URL.createObjectURL(blob);
+        window.open(url, '_blank');
+        setTimeout(function() { URL.revokeObjectURL(url); }, 30000);
+    }
+
+    function downloadContent(elementId, filename) {
+        var text = document.getElementById(elementId).textContent;
+        var blob = new Blob([text], { type: 'text/plain' });
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(function() { URL.revokeObjectURL(url); }, 30000);
     }
 
     document.querySelectorAll('.version-date').forEach(function(el) {
