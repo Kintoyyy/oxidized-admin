@@ -157,7 +157,7 @@ sudo lsof -i :5000              # port already in use?
 ```bash
 sudo systemctl status oxidized
 sudo journalctl -u oxidized -n 50
-curl http://localhost:8888/api/nodes
+curl http://localhost:8888/nodes.json
 ```
 
 **LibreNMS sync failing**

@@ -299,36 +299,42 @@ github_client = GitHubBackupClient()
 # OXIDIZED API INTEGRATION
 # ============================================================================
 
-OXIDIZED_API_URL = 'http://localhost:8888/api'
+OXIDIZED_API_URL = 'http://localhost:8888'
 
 def get_oxidized_api_url():
     """Oxidized API base URL, as configured in Settings (falls back to the default)."""
     return get_setting('oxidized_api_url', OXIDIZED_API_URL)
 
 def get_oxidized_nodes():
-    """Fetch device list from Oxidized REST API."""
+    """Fetch device list from Oxidized REST API (oxidized-web's /nodes.json)."""
     try:
-        response = requests.get(f'{get_oxidized_api_url()}/nodes', timeout=5)
+        response = requests.get(f'{get_oxidized_api_url()}/nodes.json', timeout=5)
         response.raise_for_status()
-        return response.json().get('nodes', [])
+        return response.json()
     except Exception as e:
         print(f'Oxidized API error: {e}')
         return []
 
 def get_oxidized_node_config(node_name):
-    """Fetch device config from Oxidized."""
+    """Fetch a node's current config from Oxidized (triggers a live fetch over SSH)."""
     try:
-        response = requests.get(f'{get_oxidized_api_url()}/node/{node_name}/config', timeout=5)
+        response = requests.get(f'{get_oxidized_api_url()}/node/fetch/{node_name}.json', timeout=30)
         response.raise_for_status()
-        return response.text
+        lines = response.json()
+        if isinstance(lines, list):
+            return ''.join(lines)
+        return str(lines)
     except Exception as e:
         print(f'Error fetching config: {e}')
         return None
 
 def get_oxidized_node_history(node_name):
-    """Fetch device backup history from Oxidized."""
+    """Fetch a node's stored backup version history from Oxidized."""
     try:
-        response = requests.get(f'{get_oxidized_api_url()}/node/{node_name}/log', timeout=5)
+        response = requests.get(
+            f'{get_oxidized_api_url()}/node/version.json',
+            params={'node_full': node_name}, timeout=5
+        )
         response.raise_for_status()
         return response.json()
     except Exception as e:

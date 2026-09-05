@@ -210,6 +210,7 @@ fi
 section "Configuring Oxidized"
 
 mkdir -p "$CONFIG_DIR"
+mkdir -p "$CONFIG_DIR/logs"
 
 if [ -f "$CONFIG_DIR/config" ] && [ "$NUKE_OXIDIZED" = true ]; then
     CONFIG_BACKUP="$CONFIG_DIR/config.bak.$(date +%Y%m%d%H%M%S)"
@@ -224,7 +225,7 @@ if [ ! -f "$CONFIG_DIR/config" ]; then
 ---
 username: admin
 password: password
-log: $CONFIG_DIR/logs
+log: $CONFIG_DIR/logs/oxidized.log
 rest: 0.0.0.0:8888
 resolve_dns: false
 interval: 3600
