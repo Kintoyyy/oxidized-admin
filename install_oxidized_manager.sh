@@ -1,8 +1,8 @@
 #!/bin/bash
 
 # Oxidized + LibreNMS Manager Installer
-# Comprehensive setup script with Oxidized installation, venv, dependencies,
-# database initialization, systemd service creation, and firewall config
+# Installs Oxidized (as a dedicated 'oxidized' system user), then installs
+# the Flask admin page on top of it. Must be run as root.
 
 set -e
 
@@ -27,13 +27,12 @@ section() { echo -e "\n${BLUE}=== $1 ===${NC}\n"; }
 
 section "Pre-flight Checks"
 
-if [ "$EUID" -eq 0 ]; then
-    error "This script should NOT be run as root. Please run as your normal user with sudo privileges."
+if [ "$EUID" -ne 0 ]; then
+    error "This script must be run as root, e.g.: sudo ./install_oxidized_manager.sh"
 fi
 
 info "Checking system requirements..."
 
-# OS Check
 if ! grep -q 'Ubuntu\|Debian' /etc/os-release; then
     error "This script only supports Ubuntu/Debian. Please install manually on other systems."
 fi
@@ -41,31 +40,17 @@ fi
 OS_VERSION=$(lsb_release -rs)
 info "Detected: Ubuntu/Debian $OS_VERSION"
 
-# Python check
-if ! command -v python3 &> /dev/null; then
-    error "Python3 is not installed. Please install it first: sudo apt-get install python3 python3-pip"
-fi
-
-PYTHON_VERSION=$(python3 --version | cut -d ' ' -f 2)
-info "Python version: $PYTHON_VERSION"
-
-# Sudo check
-if ! sudo -n true 2>/dev/null; then
-    info "This installation requires sudo password. You will be prompted to enter it."
-    sudo -v
-fi
-
 # ============================================================================
 # USER INPUT
 # ============================================================================
 
 section "Configuration"
 
-read -p "Enter installation directory (default: ~/oxidized-manager): " INSTALL_DIR
-INSTALL_DIR=${INSTALL_DIR:-$HOME/oxidized-manager}
+read -p "Enter admin page install directory (default: /home/oxidized/oxidized-manager): " INSTALL_DIR
+INSTALL_DIR=${INSTALL_DIR:-/home/oxidized/oxidized-manager}
 
-read -p "Enter config directory (default: ~/.config/oxidized): " CONFIG_DIR
-CONFIG_DIR=${CONFIG_DIR:-$HOME/.config/oxidized}
+read -p "Enter Oxidized config directory (default: /home/oxidized/.config/oxidized): " CONFIG_DIR
+CONFIG_DIR=${CONFIG_DIR:-/home/oxidized/.config/oxidized}
 
 read -p "Enter application port (default: 5000): " APP_PORT
 APP_PORT=${APP_PORT:-5000}
@@ -84,22 +69,59 @@ done
 read -p "Enter admin email (default: admin@localhost): " ADMIN_EMAIL
 ADMIN_EMAIL=${ADMIN_EMAIL:-admin@localhost}
 
-info "Installation directory: $INSTALL_DIR"
-info "Config directory: $CONFIG_DIR"
-info "Application port: $APP_PORT"
-info "Admin username: $ADMIN_USERNAME"
+info "Admin page install directory: $INSTALL_DIR"
+info "Oxidized config directory:    $CONFIG_DIR"
+info "Application port:             $APP_PORT"
+info "Admin username:                $ADMIN_USERNAME"
 
 # ============================================================================
-# SYSTEM DEPENDENCIES
+# DETECT EXISTING OXIDIZED INSTALLATION
+# ============================================================================
+
+section "Checking for Existing Oxidized Installation"
+
+INSTALL_OXIDIZED=true
+
+if command -v oxidized &> /dev/null; then
+    CURRENT_VERSION=$(oxidized --version 2>/dev/null || echo "unknown")
+    info "Oxidized is already installed (version: $CURRENT_VERSION)"
+    echo ""
+    echo "  [s] Skip  - leave the existing install as-is (default)"
+    echo "  [n] Nuke  - uninstall and reinstall the oxidized gems fresh"
+    echo "              (existing device configs/backups under $CONFIG_DIR are kept)"
+    echo "  [c] Cancel - exit without changing anything"
+    read -p "Choice [s/n/c]: " OXIDIZED_CHOICE
+    OXIDIZED_CHOICE=${OXIDIZED_CHOICE:-s}
+
+    case "$OXIDIZED_CHOICE" in
+        [Cc]*)
+            error "Installation cancelled by user."
+            ;;
+        [Nn]*)
+            info "Nuking existing oxidized gems (backups/config will be preserved)..."
+            gem uninstall oxidized oxidized-web oxidized-script -a -x -I || warn "Some gems may not have been installed; continuing"
+            INSTALL_OXIDIZED=true
+            ;;
+        *)
+            info "Skipping Oxidized installation, keeping existing setup."
+            INSTALL_OXIDIZED=false
+            ;;
+    esac
+else
+    info "Oxidized not found. It will be installed."
+fi
+
+# ============================================================================
+# SYSTEM DEPENDENCIES (ADMIN PAGE)
 # ============================================================================
 
 section "Installing System Dependencies"
 
 info "Updating package lists..."
-sudo apt-get update -qq
+apt-get update -qq
 
-info "Installing dependencies (this may take a few minutes)..."
-sudo apt-get install -y \
+info "Installing base dependencies (this may take a few minutes)..."
+apt-get install -y \
     python3-dev \
     python3-venv \
     python3-pip \
@@ -107,131 +129,217 @@ sudo apt-get install -y \
     curl \
     wget \
     gunicorn \
-    ufw \
-    ruby \
-    ruby-dev \
-    libsqlite3-dev \
-    libssl-dev \
-    pkg-config \
-    cmake \
-    libssh2-1-dev \
-    libicu-dev \
-    zlib1g-dev \
-    libgpgme-dev
+    ufw
 
-info "✓ System dependencies installed"
+info "Base dependencies installed"
 
 # ============================================================================
-# SETUP DIRECTORIES
+# OXIDIZED INSTALLATION (AS ROOT, DEDICATED 'oxidized' SYSTEM USER)
 # ============================================================================
 
-section "Setting Up Directories"
+if [ "$INSTALL_OXIDIZED" = true ]; then
+    section "Setting Up Oxidized System User"
 
-mkdir -p "$INSTALL_DIR"
-mkdir -p "$CONFIG_DIR"
-mkdir -p "$HOME/.oxidized_manager"
+    if id -u oxidized &> /dev/null; then
+        info "System user 'oxidized' already exists"
+    else
+        info "Creating system user 'oxidized'..."
+        adduser --disabled-password --gecos "" oxidized
+    fi
 
-info "Directories created"
+    info "Granting passwordless sudo to 'oxidized' (via /etc/sudoers.d/oxidized)..."
+    SUDOERS_TMP=$(mktemp)
+    echo "oxidized ALL=(ALL) NOPASSWD:ALL" > "$SUDOERS_TMP"
+    if visudo -cf "$SUDOERS_TMP" &> /dev/null; then
+        install -m 0440 -o root -g root "$SUDOERS_TMP" /etc/sudoers.d/oxidized
+        info "Sudoers rule installed"
+    else
+        warn "Generated sudoers file failed validation; skipping sudoers setup"
+    fi
+    rm -f "$SUDOERS_TMP"
 
-# ============================================================================
-# OXIDIZED INSTALLATION CHECK
-# ============================================================================
+    section "Installing Oxidized Build Dependencies"
 
-section "Checking Oxidized Installation"
+    apt install software-properties-common -y
 
-if command -v oxidized &> /dev/null; then
-    info "✓ Oxidized is already installed"
-    oxidized --version
+    apt install libssh2-1-dev -y
+
+    apt install ruby ruby-dev libsqlite3-dev libssl-dev pkg-config cmake libssh2-1-dev libicu-dev zlib1g-dev g++ libyaml-dev -y
+
+    apt install libgpgme-dev -y
+
+    info "Build dependencies installed"
+
+    section "Installing Oxidized Gems"
+
+    gem install oxidized
+    gem install oxidized-web
+    gem install oxidized-script
+
+    info "Verifying installation as 'oxidized' user..."
+    if su - oxidized -c "oxidized -v" &> /dev/null; then
+        OX_VERSION=$(su - oxidized -c "oxidized -v")
+        info "✓ Oxidized installed: $OX_VERSION"
+    else
+        warn "Could not verify oxidized as the 'oxidized' user. Check the gem install output above."
+    fi
 else
-    warn "Oxidized not found. Installing..."
-    
-    sudo gem install oxidized oxidized-web oxidized-script || warn "Oxidized installation had issues but continuing"
-    
-    # Initialize Oxidized config if not present
-    if [ ! -f "$CONFIG_DIR/config" ]; then
-        info "Creating Oxidized config directory..."
-        mkdir -p "$CONFIG_DIR"
-        
-        # Create minimal config
-        cat > "$CONFIG_DIR/config" << 'EOF'
+    section "Skipping Oxidized Installation"
+    info "Using existing Oxidized installation"
+
+    if ! id -u oxidized &> /dev/null; then
+        warn "'oxidized' system user does not exist yet, but Oxidized is installed elsewhere."
+        warn "The admin page will still be configured to run as 'oxidized'; create the user manually if needed:"
+        warn "  sudo adduser --disabled-password --gecos \"\" oxidized"
+    fi
+fi
+
+# ============================================================================
+# OXIDIZED CONFIGURATION
+# ============================================================================
+
+section "Configuring Oxidized"
+
+mkdir -p "$CONFIG_DIR"
+
+if [ ! -f "$CONFIG_DIR/config" ]; then
+    info "Creating minimal Oxidized config..."
+    cat > "$CONFIG_DIR/config" << EOF
 ---
 username: admin
 password: password
 interval: 3600
 use_syslog: false
-log: $HOME/.config/oxidized/logs
+log: $CONFIG_DIR/logs
 
 source:
   default: csv
 
 csv:
-  file: $HOME/.config/oxidized/router.db
+  file: $CONFIG_DIR/router.db
   delimiter: ":"
 
 output:
   default: git
 
 git:
-  repo: $HOME/.config/oxidized/repositories.default/.git
+  repo: $CONFIG_DIR/repositories.default/.git
 
 groups:
   default:
     username: admin
     password: password
+
+rest: 0.0.0.0:8080
 EOF
-        info "Created minimal Oxidized config"
-    fi
-    
-    # Create router.db if not present
-    if [ ! -f "$CONFIG_DIR/router.db" ]; then
-        touch "$CONFIG_DIR/router.db"
-        info "Created router.db"
+    info "Created $CONFIG_DIR/config"
+else
+    info "Existing Oxidized config found, leaving it untouched"
+fi
+
+if [ ! -f "$CONFIG_DIR/router.db" ]; then
+    touch "$CONFIG_DIR/router.db"
+    info "Created $CONFIG_DIR/router.db"
+fi
+
+if id -u oxidized &> /dev/null; then
+    chown -R oxidized:oxidized "$(dirname "$CONFIG_DIR")" 2>/dev/null || chown -R oxidized:oxidized "$CONFIG_DIR"
+fi
+
+# ============================================================================
+# OXIDIZED SYSTEMD SERVICE
+# ============================================================================
+
+if [ "$INSTALL_OXIDIZED" = true ] && id -u oxidized &> /dev/null; then
+    section "Creating Oxidized Systemd Service"
+
+    OXIDIZED_BIN=$(su - oxidized -c "command -v oxidized" 2>/dev/null || echo "/usr/local/bin/oxidized")
+
+    cat > /etc/systemd/system/oxidized.service << EOF
+[Unit]
+Description=Oxidized Network Device Configuration Backup Tool
+After=network.target
+
+[Service]
+Type=simple
+User=oxidized
+Group=oxidized
+Environment="HOME=/home/oxidized"
+WorkingDirectory=/home/oxidized
+ExecStart=$OXIDIZED_BIN
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    systemctl daemon-reload
+    systemctl enable oxidized.service
+    systemctl restart oxidized.service
+    sleep 2
+
+    if systemctl is-active --quiet oxidized.service; then
+        info "✓ oxidized.service started successfully"
+    else
+        warn "oxidized.service may have failed to start. Check: sudo journalctl -u oxidized -n 50"
     fi
 fi
 
 # ============================================================================
-# PYTHON VIRTUAL ENVIRONMENT
+# PYTHON VIRTUAL ENVIRONMENT (ADMIN PAGE, AS 'oxidized' USER)
 # ============================================================================
 
-section "Setting Up Python Virtual Environment"
+section "Setting Up Admin Page"
 
-info "Creating virtual environment..."
-python3 -m venv "$INSTALL_DIR/venv"
+mkdir -p "$INSTALL_DIR"
+mkdir -p /home/oxidized/.oxidized_manager
 
-source "$INSTALL_DIR/venv/bin/activate"
-
-info "Upgrading pip..."
-pip install --upgrade pip setuptools wheel -q
-
-# ============================================================================
-# PYTHON DEPENDENCIES
-# ============================================================================
-
-section "Installing Python Dependencies"
-
-info "Installing Flask and dependencies..."
-pip install -q \
-    Flask==2.3.0 \
-    PyYAML==6.0 \
-    requests==2.31.0 \
-    gunicorn==21.0.0 \
-    Werkzeug==2.3.0
-
-info "✓ Python dependencies installed"
-
-# ============================================================================
-# DOWNLOAD APPLICATION
-# ============================================================================
-
-section "Installing Application"
-
-# If running from current directory, copy the app
 if [ -f "oxidized_nms_manager.py" ]; then
     cp oxidized_nms_manager.py "$INSTALL_DIR/"
-    info "Application copied"
 else
     error "oxidized_nms_manager.py not found in current directory"
 fi
+
+if [ -f "requirements.txt" ]; then
+    cp requirements.txt "$INSTALL_DIR/"
+fi
+
+if id -u oxidized &> /dev/null; then
+    chown -R oxidized:oxidized "$INSTALL_DIR" /home/oxidized/.oxidized_manager
+    RUN_AS_OXIDIZED=true
+else
+    warn "'oxidized' user not available; installing admin page to run as root instead"
+    RUN_AS_OXIDIZED=false
+fi
+
+info "Creating virtual environment..."
+if [ "$RUN_AS_OXIDIZED" = true ]; then
+    su - oxidized -c "python3 -m venv '$INSTALL_DIR/venv'"
+    su - oxidized -c "'$INSTALL_DIR/venv/bin/pip' install --upgrade pip setuptools wheel -q"
+else
+    python3 -m venv "$INSTALL_DIR/venv"
+    "$INSTALL_DIR/venv/bin/pip" install --upgrade pip setuptools wheel -q
+fi
+
+info "Installing Python dependencies..."
+if [ "$RUN_AS_OXIDIZED" = true ]; then
+    if [ -f "$INSTALL_DIR/requirements.txt" ]; then
+        su - oxidized -c "'$INSTALL_DIR/venv/bin/pip' install -q -r '$INSTALL_DIR/requirements.txt'"
+    else
+        su - oxidized -c "'$INSTALL_DIR/venv/bin/pip' install -q Flask==2.3.7 PyYAML==6.0.1 requests==2.31.0 gunicorn==21.2.0 Werkzeug==2.3.7"
+    fi
+else
+    if [ -f "$INSTALL_DIR/requirements.txt" ]; then
+        "$INSTALL_DIR/venv/bin/pip" install -q -r "$INSTALL_DIR/requirements.txt"
+    else
+        "$INSTALL_DIR/venv/bin/pip" install -q Flask==2.3.7 PyYAML==6.0.1 requests==2.31.0 gunicorn==21.2.0 Werkzeug==2.3.7
+    fi
+fi
+
+info "✓ Python dependencies installed"
 
 # ============================================================================
 # DATABASE INITIALIZATION
@@ -239,54 +347,60 @@ fi
 
 section "Initializing Database"
 
-cd "$INSTALL_DIR"
-
-# Create Python script to init DB and create admin
-cat > init_app.py << 'PYEOF'
+cat > "$INSTALL_DIR/init_app.py" << 'PYEOF'
 import sys
 sys.path.insert(0, '.')
 
 from oxidized_nms_manager import init_db, create_user
 import os
 
-os.environ['OXIDIZED_CONFIG_DIR'] = os.path.expanduser('~/.config/oxidized')
-os.environ['APP_DB_PATH'] = os.path.expanduser('~/.oxidized_manager/app.db')
-
 init_db()
-print("✓ Database initialized")
+print("Database initialized")
 
 username = sys.argv[1] if len(sys.argv) > 1 else 'admin'
 password = sys.argv[2] if len(sys.argv) > 2 else 'admin'
 email = sys.argv[3] if len(sys.argv) > 3 else 'admin@localhost'
 
 if create_user(username, password, email, 'admin'):
-    print(f"✓ Admin user '{username}' created")
+    print(f"Admin user '{username}' created")
 else:
-    print(f"⚠ User '{username}' may already exist")
+    print(f"User '{username}' may already exist")
 PYEOF
 
-source venv/bin/activate
-python3 init_app.py "$ADMIN_USERNAME" "$ADMIN_PASSWORD" "$ADMIN_EMAIL"
-rm init_app.py
+if [ "$RUN_AS_OXIDIZED" = true ]; then
+    chown oxidized:oxidized "$INSTALL_DIR/init_app.py"
+    su - oxidized -c "cd '$INSTALL_DIR' && OXIDIZED_CONFIG_DIR='$CONFIG_DIR' APP_DB_PATH='/home/oxidized/.oxidized_manager/app.db' '$INSTALL_DIR/venv/bin/python3' init_app.py '$ADMIN_USERNAME' '$ADMIN_PASSWORD' '$ADMIN_EMAIL'"
+else
+    (cd "$INSTALL_DIR" && OXIDIZED_CONFIG_DIR="$CONFIG_DIR" APP_DB_PATH="/home/oxidized/.oxidized_manager/app.db" "$INSTALL_DIR/venv/bin/python3" init_app.py "$ADMIN_USERNAME" "$ADMIN_PASSWORD" "$ADMIN_EMAIL")
+fi
+
+rm -f "$INSTALL_DIR/init_app.py"
 
 # ============================================================================
-# SYSTEMD SERVICE
+# ADMIN PAGE SYSTEMD SERVICE
 # ============================================================================
 
-section "Creating Systemd Service"
+section "Creating Admin Page Systemd Service"
 
-SERVICE_CONTENT="[Unit]
-Description=Oxidized + LibreNMS Manager
-After=network.target
+SERVICE_USER="oxidized"
+if [ "$RUN_AS_OXIDIZED" != true ]; then
+    SERVICE_USER="root"
+fi
+
+cat > /etc/systemd/system/oxidized-manager.service << EOF
+[Unit]
+Description=Oxidized Manager Admin Page
+After=network.target oxidized.service
 
 [Service]
 Type=notify
-User=$USER
+User=$SERVICE_USER
+Group=$SERVICE_USER
 WorkingDirectory=$INSTALL_DIR
-Environment=\"PATH=$INSTALL_DIR/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\"
-Environment=\"OXIDIZED_CONFIG_DIR=$CONFIG_DIR\"
-Environment=\"APP_DB_PATH=$HOME/.oxidized_manager/app.db\"
-Environment=\"PORT=$APP_PORT\"
+Environment="PATH=$INSTALL_DIR/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Environment="OXIDIZED_CONFIG_DIR=$CONFIG_DIR"
+Environment="APP_DB_PATH=/home/oxidized/.oxidized_manager/app.db"
+Environment="PORT=$APP_PORT"
 ExecStart=$INSTALL_DIR/venv/bin/gunicorn --workers 4 --bind 0.0.0.0:$APP_PORT --timeout 60 oxidized_nms_manager:app
 Restart=always
 RestartSec=10
@@ -295,16 +409,12 @@ StandardError=journal
 
 [Install]
 WantedBy=multi-user.target
-"
+EOF
 
-echo "$SERVICE_CONTENT" | sudo tee /etc/systemd/system/oxidized-manager.service > /dev/null
 info "Service file created"
 
-info "Reloading systemd..."
-sudo systemctl daemon-reload
-
-info "Enabling service..."
-sudo systemctl enable oxidized-manager.service
+systemctl daemon-reload
+systemctl enable oxidized-manager.service
 
 # ============================================================================
 # FIREWALL CONFIGURATION
@@ -312,35 +422,32 @@ sudo systemctl enable oxidized-manager.service
 
 section "Firewall Configuration"
 
-if sudo ufw status | grep -q "Status: active"; then
-    info "UFW is active. Adding firewall rule for port $APP_PORT..."
-    sudo ufw allow "$APP_PORT/tcp"
-    info "✓ Firewall rule added"
+if ufw status | grep -q "Status: active"; then
+    info "UFW is active. Adding firewall rules..."
+    ufw allow "$APP_PORT/tcp"
+    ufw allow 8080/tcp
+    info "✓ Firewall rules added for $APP_PORT (admin page) and 8080 (Oxidized API)"
 else
-    warn "UFW is not active. You may need to manually allow port $APP_PORT"
+    warn "UFW is not active. You may need to manually allow ports $APP_PORT and 8080"
 fi
 
 # ============================================================================
 # START SERVICE
 # ============================================================================
 
-section "Starting Service"
+section "Starting Admin Page Service"
 
-info "Starting oxidized-manager..."
-sudo systemctl start oxidized-manager.service
-
+systemctl start oxidized-manager.service
 sleep 2
 
-if sudo systemctl is-active --quiet oxidized-manager.service; then
-    info "✓ Service started successfully"
+if systemctl is-active --quiet oxidized-manager.service; then
+    info "✓ oxidized-manager service started successfully"
 else
     warn "Service may have failed to start. Check logs:"
     warn "  sudo journalctl -u oxidized-manager -n 50"
 fi
 
-# Verify port is listening
-if netstat -tuln 2>/dev/null | grep -q ":$APP_PORT" || \
-   ss -tuln 2>/dev/null | grep -q ":$APP_PORT"; then
+if netstat -tuln 2>/dev/null | grep -q ":$APP_PORT" || ss -tuln 2>/dev/null | grep -q ":$APP_PORT"; then
     info "✓ Port $APP_PORT is listening"
 else
     warn "Port $APP_PORT is not listening yet. Give it a moment to start."
@@ -358,7 +465,6 @@ echo "║         Oxidized + LibreNMS Manager Successfully Installed     ║"
 echo "╚════════════════════════════════════════════════════════════════╝"
 echo ""
 echo "Web Interface: http://localhost:$APP_PORT"
-echo "               (or http://\$YOUR_IP:$APP_PORT from another machine)"
 echo ""
 echo "Login:"
 echo "  Username: $ADMIN_USERNAME"
@@ -366,26 +472,21 @@ echo "  Password: (the one you entered during setup)"
 echo ""
 echo "Configuration:"
 echo "  Oxidized config: $CONFIG_DIR"
-echo "  App database:    $HOME/.oxidized_manager/app.db"
+echo "  App database:    /home/oxidized/.oxidized_manager/app.db"
 echo "  App directory:   $INSTALL_DIR"
+echo "  Runs as user:    $SERVICE_USER"
 echo ""
 echo "Service Management:"
-echo "  Start:    sudo systemctl start oxidized-manager"
-echo "  Stop:     sudo systemctl stop oxidized-manager"
-echo "  Status:   sudo systemctl status oxidized-manager"
-echo "  Logs:     sudo journalctl -u oxidized-manager -f"
+echo "  Admin page - Start:  sudo systemctl start oxidized-manager"
+echo "  Admin page - Logs:   sudo journalctl -u oxidized-manager -f"
+echo "  Oxidized   - Start:  sudo systemctl start oxidized"
+echo "  Oxidized   - Logs:   sudo journalctl -u oxidized -f"
 echo ""
 echo "Quick Setup Next Steps:"
 echo "  1. Open http://localhost:$APP_PORT in your browser"
 echo "  2. Log in with your admin credentials"
 echo "  3. Go to Settings → configure LibreNMS API (optional)"
 echo "  4. Add devices via Devices tab or sync from LibreNMS"
-echo "  5. Configure Oxidized in Settings if needed"
-echo ""
-echo "For Oxidized itself:"
-echo "  - Config: $CONFIG_DIR/config"
-echo "  - Router database: $CONFIG_DIR/router.db"
-echo "  - Backups: $CONFIG_DIR/repositories.default"
 echo ""
 echo "Documentation: https://github.com/ytti/oxidized"
 echo ""

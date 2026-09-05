@@ -21,14 +21,21 @@ A NOC dashboard for managing [Oxidized](https://github.com/ytti/oxidized) config
 
 ## Installation
 
+The installer must be run as root — it creates a dedicated `oxidized` system user, installs Oxidized under it, and then installs the admin page.
+
 ```bash
 git clone https://github.com/Kintoyyy/oxidized-admin
 cd oxidized-admin
 chmod +x install_oxidized_manager.sh
-./install_oxidized_manager.sh
+sudo ./install_oxidized_manager.sh
 ```
 
-You'll be prompted for the install directory, config directory, port, and admin username/password/email. The script installs system dependencies, Oxidized (if not already present), a Python venv, initializes the database, creates a systemd service, and starts it.
+You'll be prompted for the admin page install directory, Oxidized config directory, port, and admin username/password/email. The script then:
+
+1. Detects any existing Oxidized install — you can **skip** it (leave as-is), **nuke** it (reinstall the gems fresh, keeping existing backups/config), or cancel.
+2. If installing, creates the `oxidized` system user, grants it passwordless sudo, installs build dependencies, and installs the `oxidized`/`oxidized-web`/`oxidized-script` gems.
+3. Sets up an `oxidized.service` systemd unit running as that user.
+4. Installs the Flask admin page (also running as the `oxidized` user), initializes its database, and sets up the `oxidized-manager.service` systemd unit.
 
 Open `http://localhost:5000` and log in with the admin credentials you set.
 
@@ -46,8 +53,8 @@ python3 oxidized_nms_manager.py
 Environment variables (set in the systemd unit or shell):
 
 ```bash
-OXIDIZED_CONFIG_DIR   # default: ~/.config/oxidized
-APP_DB_PATH           # default: ~/.oxidized_manager/app.db
+OXIDIZED_CONFIG_DIR   # default: /home/oxidized/.config/oxidized
+APP_DB_PATH           # default: /home/oxidized/.oxidized_manager/app.db
 APP_NAME              # default: "Oxidized Manager"
 PORT                  # default: 5000
 SECRET_KEY            # set a real value in production
@@ -78,8 +85,10 @@ curl -u admin:password -X POST http://localhost:5000/api/test-ssh
 ## Service management
 
 ```bash
-sudo systemctl start|stop|restart|status oxidized-manager
+sudo systemctl start|stop|restart|status oxidized-manager   # admin page
+sudo systemctl start|stop|restart|status oxidized           # backup engine
 sudo journalctl -u oxidized-manager -f
+sudo journalctl -u oxidized -f
 ```
 
 ## Production notes
@@ -100,6 +109,7 @@ sudo lsof -i :5000              # port already in use?
 **Can't reach the Oxidized API**
 ```bash
 sudo systemctl status oxidized
+sudo journalctl -u oxidized -n 50
 curl http://localhost:8080/api/nodes
 ```
 
@@ -114,17 +124,21 @@ curl -H "X-Auth-Token: YOUR_TOKEN" http://<librenms-host>/api/v0/devices
 
 **Database issues**
 ```bash
-sqlite3 ~/.oxidized_manager/app.db "SELECT COUNT(*) FROM device_metadata;"
-rm ~/.oxidized_manager/app.db   # resets all app data — last resort
+sudo sqlite3 /home/oxidized/.oxidized_manager/app.db "SELECT COUNT(*) FROM device_metadata;"
+sudo rm /home/oxidized/.oxidized_manager/app.db   # resets all app data — last resort
 ```
 
 ## Uninstall
 
 ```bash
-sudo systemctl stop oxidized-manager
-sudo systemctl disable oxidized-manager
-sudo rm /etc/systemd/system/oxidized-manager.service
-rm -rf ~/oxidized-manager ~/.oxidized_manager ~/.config/oxidized   # also deletes data
+sudo systemctl stop oxidized-manager oxidized
+sudo systemctl disable oxidized-manager oxidized
+sudo rm /etc/systemd/system/oxidized-manager.service /etc/systemd/system/oxidized.service
+sudo rm /etc/sudoers.d/oxidized
+sudo systemctl daemon-reload
+
+# Also deletes all device backups/config and the oxidized user's data:
+sudo deluser --remove-home oxidized
 ```
 
 ## License
