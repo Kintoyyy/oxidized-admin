@@ -1209,16 +1209,22 @@ def manage_devices():
         
         return redirect(url_for('manage_devices'))
     
-    # Get groups for dropdown
+    # Get groups (and their default credentials, for autofill) for the dropdown
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
-    c.execute('SELECT name FROM device_groups ORDER BY name')
-    groups = [dict(row)['name'] for row in c.fetchall()]
+    c.execute('SELECT name, default_username, default_password FROM device_groups ORDER BY name')
+    group_rows = [dict(row) for row in c.fetchall()]
     conn.close()
-    
+
+    groups = [g['name'] for g in group_rows]
+    group_defaults = {
+        g['name']: {'username': g['default_username'] or '', 'password': g['default_password'] or ''}
+        for g in group_rows
+    }
+
     return render_template_string(DEVICE_MANAGEMENT_TEMPLATE, devices=devices, groups=groups,
-                                  model_groups=get_model_groups())
+                                  model_groups=get_model_groups(), group_defaults=group_defaults)
 
 @app.route('/config', methods=['GET', 'POST'])
 @requires_auth
@@ -2167,7 +2173,7 @@ DEVICE_MANAGEMENT_TEMPLATE = '''<!DOCTYPE html>
                     </div>
                     <div class="field">
                         <label>Group</label>
-                        <select name="group" id="field-group" required>
+                        <select name="group" id="field-group" required onchange="applyGroupDefaults()">
                             {% for g in groups %}
                             <option value="{{ g }}">{{ g }}</option>
                             {% else %}
@@ -2231,11 +2237,24 @@ DEVICE_MANAGEMENT_TEMPLATE = '''<!DOCTYPE html>
 </div>
 
     <script>
+    var GROUP_DEFAULTS = {{ group_defaults|tojson }};
+
+    function applyGroupDefaults() {
+        var groupName = document.getElementById('field-group').value;
+        var defaults = GROUP_DEFAULTS[groupName];
+        if (!defaults) return;
+        var usernameField = document.getElementById('field-username');
+        var passwordField = document.getElementById('field-password');
+        if (defaults.username) usernameField.value = defaults.username;
+        if (defaults.password) passwordField.value = defaults.password;
+    }
+
     function resetForm() {
         document.getElementById('device-form').reset();
         document.getElementById('form-action').value = 'add';
         document.getElementById('field-ip').readOnly = false;
         document.getElementById('form-title').textContent = 'Add New Device';
+        applyGroupDefaults();
     }
 
     function showAddForm() {
