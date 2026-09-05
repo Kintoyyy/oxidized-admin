@@ -6,7 +6,6 @@ Includes auto-installer for Oxidized and full configuration management.
 """
 
 import csv
-import hashlib
 import json
 import os
 import shutil
@@ -558,6 +557,19 @@ def get_oxidized_node_config(node_name, group='default'):
         print(f'Error fetching config: {e}')
         return None
 
+def trigger_oxidized_update(node_name, group='default'):
+    """Queue a node for immediate re-fetch by Oxidized (matches the native 'Update configuration'
+    action, which hits /node/next/<group>/<node> — it just queues the job on Oxidized's own
+    scheduler and returns right away, unlike /node/fetch which blocks on a live SSH connection)."""
+    try:
+        group_seg = f'{group}/' if group else ''
+        response = requests.get(f'{get_oxidized_api_url()}/node/next/{group_seg}{node_name}.json', timeout=10)
+        response.raise_for_status()
+        return True
+    except Exception as e:
+        print(f'Error triggering update: {e}')
+        return False
+
 def get_oxidized_node_history(node_name, group='default'):
     """Fetch a node's stored backup version history from Oxidized."""
     node_full = f'{group}/{node_name}' if group else node_name
@@ -1021,30 +1033,31 @@ def get_device_config(device_name):
 @app.route('/api/oxidized/fetch/<device_name>', methods=['POST'])
 @requires_auth
 def api_oxidized_fetch(device_name):
-    """Trigger a live config fetch for a device (used by the 'Update Configuration' button)."""
+    """Queue an immediate re-fetch for a device via Oxidized (matches the native
+    'Update configuration' action, which hits /node/next — this just queues the job
+    on Oxidized's own scheduler and returns right away; it does not hand back the
+    fetched content, since the actual SSH pull happens asynchronously)."""
     group = get_device_group(device_name)
-    config = get_oxidized_node_config(device_name, group)
+    ok = trigger_oxidized_update(device_name, group)
+    device_ip = next((d['ip'] for d in read_router_db() if d['name'] == device_name), None)
 
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    if config is None:
+    if not ok:
         c.execute('''INSERT INTO backup_history (device_ip, device_name, status, error_message)
-                     VALUES (?, ?, 'error', 'Failed to fetch configuration from Oxidized')''',
-                  (next((d['ip'] for d in read_router_db() if d['name'] == device_name), None), device_name))
+                     VALUES (?, ?, 'error', 'Failed to queue update with Oxidized')''',
+                  (device_ip, device_name))
         conn.commit()
         conn.close()
-        return jsonify({'status': 'error', 'message': 'Failed to fetch configuration from Oxidized'}), 500
+        return jsonify({'status': 'error', 'message': 'Failed to queue update with Oxidized'}), 500
 
-    file_hash = hashlib.sha256(config.encode('utf-8', errors='ignore')).hexdigest()
-    c.execute('''INSERT INTO backup_history (device_ip, device_name, file_hash, file_size, status)
-                 VALUES (?, ?, ?, ?, 'success')''',
-              (next((d['ip'] for d in read_router_db() if d['name'] == device_name), None),
-               device_name, file_hash, len(config)))
+    c.execute('''INSERT INTO backup_history (device_ip, device_name, status)
+                 VALUES (?, ?, 'queued')''', (device_ip, device_name))
     conn.commit()
     conn.close()
 
-    log_audit('device_config_updated', 'device', device_name)
-    return jsonify({'status': 'success', 'message': 'Configuration updated', 'content': config})
+    log_audit('device_update_requested', 'device', device_name)
+    return jsonify({'status': 'success', 'message': 'Update queued. Oxidized will fetch it shortly.'})
 
 @app.route('/api/oxidized/version-content')
 @requires_auth
@@ -1779,14 +1792,14 @@ DASHBOARD_TEMPLATE = '''<!DOCTYPE html>
         var result = document.getElementById('update-result-' + idx);
         btn.disabled = true;
         result.style.color = '#cbd5e1';
-        result.textContent = '⏳ updating...';
+        result.textContent = '⏳ queuing...';
 
         fetch('/api/oxidized/fetch/' + encodeURIComponent(name), { method: 'POST' })
             .then(response => response.json().then(data => ({ ok: response.ok, data: data })))
             .then(({ ok, data }) => {
                 if (ok && data.status === 'success') {
                     result.style.color = '#10b981';
-                    result.textContent = '✓ updated';
+                    result.textContent = '✓ queued';
                 } else {
                     result.style.color = '#f87171';
                     result.textContent = '✗ ' + data.message;
@@ -1905,7 +1918,7 @@ DEVICE_DETAIL_TEMPLATE = '''<!DOCTYPE html>
         {% for backup in backups %}
         <div class="card" style="padding: 1rem; margin-bottom: 0.75rem;">
             <div class="muted" style="font-size: 12px;">{{ backup.created_at }}</div>
-            <div>Status: <span class="badge {{ 'badge-success' if backup.status == 'success' else 'badge-destructive' }}">{{ backup.status }}</span></div>
+            <div>Status: <span class="badge {{ 'badge-success' if backup.status == 'success' else ('badge-warning' if backup.status == 'queued' else 'badge-destructive') }}">{{ backup.status }}</span></div>
             <div class="muted" style="font-size: 12px;">Size: {{ backup.file_size }} bytes</div>
         </div>
         {% else %}
@@ -1926,18 +1939,16 @@ DEVICE_DETAIL_TEMPLATE = '''<!DOCTYPE html>
     function updateConfig() {
         var btn = document.getElementById('update-config-btn');
         var result = document.getElementById('update-config-result');
-        var viewer = document.getElementById('config-viewer');
         btn.disabled = true;
         result.style.color = '#cbd5e1';
-        result.textContent = '⏳ Fetching latest config from device...';
+        result.textContent = '⏳ Queuing update with Oxidized...';
 
         fetch('{{ url_for("api_oxidized_fetch", device_name=device_name) }}', { method: 'POST' })
             .then(response => response.json().then(data => ({ ok: response.ok, data: data })))
             .then(({ ok, data }) => {
                 if (ok && data.status === 'success') {
                     result.style.color = '#10b981';
-                    result.textContent = '✓ ' + data.message;
-                    viewer.textContent = data.content || 'No configuration found';
+                    result.textContent = '✓ ' + data.message + ' Reload this page in a few seconds to see the fetched config.';
                 } else {
                     result.style.color = '#f87171';
                     result.textContent = '✗ ' + data.message;
