@@ -8,6 +8,7 @@ Includes auto-installer for Oxidized and full configuration management.
 import csv
 import json
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -584,25 +585,50 @@ def get_oxidized_node_history(node_name, group='default'):
         print(f'Error fetching history: {e}')
         return []
 
+# oxidized-web's /nodes/stats.json is broken in the versions we've tested against -
+# it serializes each node's Oxidized::Node::Stats object with Ruby's default
+# to-string representation (e.g. "#<Oxidized::Node::Stats:0x...>") instead of real
+# fields, since that class doesn't implement JSON serialization. The plain HTML
+# page (/nodes/stats, no .json) renders the real numbers directly in its table, so
+# we parse that instead.
+OXIDIZED_STATS_ROW_RE = re.compile(
+    r"<tr[^>]*>\s*"
+    r"<td>([^<]*)</td>\s*"           # name
+    r"<td>([^<]*)</td>\s*"           # total runs
+    r"<td>([^<]*)</td>\s*"           # total failures
+    r"<td>([^<]*)</td>\s*"           # failure rate
+    r"<td>([^<]*)</td>\s*"           # average run time
+    r"<td>.*?<div class='([^']*)'.*?</td>\s*"           # last status
+    r"<td class='time' epoch='([^']*)'>([^<]*)</td>\s*"  # last update
+    r"<td class='time' epoch='([^']*)'>([^<]*)</td>\s*"  # last failure
+    r"</tr>",
+    re.DOTALL
+)
+
 def get_oxidized_stats():
-    """Fetch per-node run stats from Oxidized (oxidized-web's /nodes/stats.json)."""
+    """Fetch per-node run stats by parsing Oxidized's /nodes/stats HTML page."""
     try:
-        response = requests.get(f'{get_oxidized_api_url()}/nodes/stats.json', timeout=5)
+        response = requests.get(f'{get_oxidized_api_url()}/nodes/stats', timeout=5)
         response.raise_for_status()
-        return response.json()
+        html = response.text
     except Exception as e:
-        print(f'Oxidized stats API error: {e}')
+        print(f'Oxidized stats error: {e}')
         return {}
 
-def _stat_value(stats, *keys):
-    """Return the first matching key's value from a stats dict, trying several
-    likely spellings since Oxidized's exact stats schema isn't pinned down."""
-    if not isinstance(stats, dict):
-        return None
-    for k in keys:
-        if k in stats and stats[k] is not None:
-            return stats[k]
-    return None
+    stats = {}
+    for m in OXIDIZED_STATS_ROW_RE.finditer(html):
+        (name, total_runs, total_failures, failure_rate, avg_run_time, last_status,
+         _last_update_epoch, last_update, _last_failure_epoch, last_failure) = m.groups()
+        stats[name.strip()] = {
+            'total_runs': total_runs.strip(),
+            'total_failures': total_failures.strip(),
+            'failure_rate': failure_rate.strip(),
+            'avg_run_time': avg_run_time.strip(),
+            'last_status': last_status.strip(),
+            'last_update': last_update.strip(),
+            'last_failure': last_failure.strip(),
+        }
+    return stats
 
 # ============================================================================
 # LIBRENMS API INTEGRATION
@@ -953,7 +979,7 @@ def dashboard():
     for node in oxidized_nodes:
         c.execute('SELECT * FROM device_metadata WHERE device_ip = ?', (node.get('ip'),))
         meta = c.fetchone()
-        node_stats = oxidized_stats.get(node.get('name'), {}) if isinstance(oxidized_stats, dict) else {}
+        node_stats = oxidized_stats.get(node.get('name'), {})
 
         devices.append({
             'name': node.get('name'),
@@ -964,10 +990,10 @@ def dashboard():
             'last_update': node.get('time'),
             'mtime': node.get('mtime'),
             'metadata': dict(meta) if meta else {},
-            'total_failures': _stat_value(node_stats, 'total_failures', 'failures', 'fail_count'),
-            'avg_run_time': _stat_value(node_stats, 'average_run_time', 'avg_run_time', 'avg_time'),
-            'last_failure': _stat_value(node_stats, 'last_failure', 'last_fail'),
-            'stats_raw': node_stats
+            'total_failures': node_stats.get('total_failures'),
+            'failure_rate': node_stats.get('failure_rate'),
+            'avg_run_time': node_stats.get('avg_run_time'),
+            'last_failure': node_stats.get('last_failure')
         })
     conn.close()
     
@@ -1745,6 +1771,7 @@ DASHBOARD_TEMPLATE = '''<!DOCTYPE html>
                     <th>Last Update</th>
                     <th>Last Changed</th>
                     <th>Failures</th>
+                    <th>Failure Rate</th>
                     <th>Avg Run Time</th>
                     <th>Last Failure</th>
                     <th>Actions</th>
@@ -1765,10 +1792,11 @@ DASHBOARD_TEMPLATE = '''<!DOCTYPE html>
                         </span>
                     </td>
                     <td>{{ device.last_update or 'never' }}</td>
-                    <td title="{{ device.stats_raw|tojson }}">{{ device.mtime or 'unknown' }}</td>
-                    <td title="{{ device.stats_raw|tojson }}">{{ device.total_failures if device.total_failures is not none else '-' }}</td>
-                    <td title="{{ device.stats_raw|tojson }}">{{ device.avg_run_time if device.avg_run_time is not none else '-' }}</td>
-                    <td title="{{ device.stats_raw|tojson }}">{{ device.last_failure if device.last_failure is not none else 'never' }}</td>
+                    <td>{{ device.mtime or 'unknown' }}</td>
+                    <td>{{ device.total_failures if device.total_failures is not none else '-' }}</td>
+                    <td>{{ device.failure_rate if device.failure_rate is not none else '-' }}</td>
+                    <td>{{ device.avg_run_time if device.avg_run_time is not none else '-' }}</td>
+                    <td>{{ device.last_failure if device.last_failure is not none else 'never' }}</td>
                     <td>
                         <div class="flex">
                             <a href="{{ url_for('device_detail', device_name=device.name) }}" class="btn btn-outline btn-sm">View</a>
@@ -1778,7 +1806,7 @@ DASHBOARD_TEMPLATE = '''<!DOCTYPE html>
                     </td>
                 </tr>
                 {% else %}
-                <tr><td colspan="10">No devices found. Sync from LibreNMS or add one from the Devices page.</td></tr>
+                <tr><td colspan="11">No devices found. Sync from LibreNMS or add one from the Devices page.</td></tr>
                 {% endfor %}
             </tbody>
         </table>
