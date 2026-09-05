@@ -1827,6 +1827,10 @@ DEVICE_DETAIL_TEMPLATE = '''<!DOCTYPE html>
         .diff-remove { background: rgba(239, 68, 68, 0.15); color: #fca5a5; }
         #version-content, #diff-content { display: none; margin-top: 1rem; }
         .diff-picker select { min-width: 220px; }
+        #config-viewer, #version-content, #diff-old, #diff-new {
+            height: calc(100vh - 260px);
+            max-height: none;
+        }
     </style>
 </head>
 <body>
@@ -1916,10 +1920,18 @@ DEVICE_DETAIL_TEMPLATE = '''<!DOCTYPE html>
 
     <div id="backups" class="tab-content">
         {% for backup in backups %}
-        <div class="card" style="padding: 1rem; margin-bottom: 0.75rem;">
-            <div class="muted" style="font-size: 12px;">{{ backup.created_at }}</div>
-            <div>Status: <span class="badge {{ 'badge-success' if backup.status == 'success' else ('badge-warning' if backup.status == 'queued' else 'badge-destructive') }}">{{ backup.status }}</span></div>
-            <div class="muted" style="font-size: 12px;">Size: {{ backup.file_size }} bytes</div>
+        <div class="card flex-between" style="padding: 1rem; margin-bottom: 0.75rem;">
+            <div>
+                <div class="muted" style="font-size: 12px;">{{ backup.created_at }}</div>
+                <div>Status: <span class="badge {{ 'badge-success' if backup.status == 'success' else ('badge-warning' if backup.status == 'queued' else 'badge-destructive') }}">{{ backup.status }}</span></div>
+                {% if backup.file_size %}
+                <div class="muted" style="font-size: 12px;">Size: {{ backup.file_size }} bytes</div>
+                {% endif %}
+                {% if backup.error_message %}
+                <div class="muted" style="font-size: 12px;">{{ backup.error_message }}</div>
+                {% endif %}
+            </div>
+            <a class="btn btn-outline btn-sm" href="{{ url_for('get_device_config', device_name=device_name) }}" download="{{ device_name }}.conf" title="Downloads the device's current config (this app doesn't store a separate copy per backup entry)">Download</a>
         </div>
         {% else %}
         <div class="muted">No backups logged yet through this app. Click "Update Configuration" on the Config tab to trigger one - Oxidized's own scheduled backups show up under Versions instead.</div>
