@@ -146,10 +146,14 @@ def get_setting(key, default=None):
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
-    c.execute('SELECT value, value_type FROM settings WHERE key = ?', (key,))
-    row = c.fetchone()
+    try:
+        c.execute('SELECT value, value_type FROM settings WHERE key = ?', (key,))
+        row = c.fetchone()
+    except sqlite3.OperationalError:
+        # settings table doesn't exist yet (DB not initialized) - nothing configured
+        row = None
     conn.close()
-    
+
     if not row:
         return default
     

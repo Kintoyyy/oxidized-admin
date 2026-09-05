@@ -6,6 +6,12 @@
 
 set -e
 
+# Prevent apt/needrestart from popping up interactive (whiptail) dialogs
+# that take over the terminal mid-install (looks like the screen "clears").
+export DEBIAN_FRONTEND=noninteractive
+export NEEDRESTART_MODE=a
+export NEEDRESTART_SUSPEND=1
+
 # ============================================================================
 # COLOR DEFINITIONS
 # ============================================================================
