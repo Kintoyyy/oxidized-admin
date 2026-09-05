@@ -932,6 +932,35 @@ def api_oxidized_restart():
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
+@app.route('/api/oxidized/test', methods=['GET'])
+@requires_auth
+@requires_admin
+def api_oxidized_test():
+    """Debug: hit the Oxidized REST API directly and return the raw result."""
+    url = f'{get_oxidized_api_url()}/nodes.json'
+    result = {'url': url}
+    start = datetime.now()
+    try:
+        response = requests.get(url, timeout=8)
+        result['elapsed_ms'] = round((datetime.now() - start).total_seconds() * 1000, 1)
+        result['status_code'] = response.status_code
+        result['ok'] = response.status_code == 200
+        result['body_preview'] = response.text[:2000]
+        try:
+            result['parsed_json'] = response.json()
+        except Exception:
+            result['parsed_json'] = None
+    except requests.exceptions.ConnectionError as e:
+        result['ok'] = False
+        result['error'] = f'Connection error (nothing listening / refused?): {e}'
+    except requests.exceptions.Timeout as e:
+        result['ok'] = False
+        result['error'] = f'Timed out: {e}'
+    except Exception as e:
+        result['ok'] = False
+        result['error'] = f'{type(e).__name__}: {e}'
+    return jsonify(result)
+
 @app.route('/settings', methods=['GET', 'POST'])
 @requires_auth
 @requires_admin
@@ -2119,10 +2148,12 @@ SETTINGS_TEMPLATE = '''<!DOCTYPE html>
         <div class="status status-error">✗ Oxidized API is not reachable. Please check your installation.</div>
         {% endif %}
 
-        <div style="margin-bottom: 1.5rem; display: flex; align-items: center; gap: 1rem;">
+        <div style="margin-bottom: 1rem; display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;">
             <button type="button" class="btn-secondary" id="restart-oxidized-btn" onclick="restartOxidized()">Restart Oxidized Service</button>
+            <button type="button" class="btn-secondary" id="test-oxidized-btn" onclick="testOxidized()">Test Oxidized Connection</button>
             <span id="restart-oxidized-result" style="font-size: 13px;"></span>
         </div>
+        <pre id="test-oxidized-result" style="display: none; background: #0f172a; border: 1px solid #334155; border-radius: 6px; padding: 1rem; margin-bottom: 1.5rem; font-size: 12px; white-space: pre-wrap; word-break: break-all; max-height: 400px; overflow: auto;"></pre>
 
         <form method="POST">
             <div class="section">
@@ -2210,6 +2241,28 @@ SETTINGS_TEMPLATE = '''<!DOCTYPE html>
             .catch(err => {
                 result.style.color = '#f87171';
                 result.textContent = '✗ ' + err;
+                btn.disabled = false;
+            });
+    }
+
+    function testOxidized() {
+        var btn = document.getElementById('test-oxidized-btn');
+        var out = document.getElementById('test-oxidized-result');
+        btn.disabled = true;
+        out.style.display = 'block';
+        out.style.color = '#cbd5e1';
+        out.textContent = 'Testing...';
+
+        fetch('{{ url_for("api_oxidized_test") }}')
+            .then(response => response.json())
+            .then(data => {
+                out.style.color = data.ok ? '#10b981' : '#f87171';
+                out.textContent = JSON.stringify(data, null, 2);
+                btn.disabled = false;
+            })
+            .catch(err => {
+                out.style.color = '#f87171';
+                out.textContent = 'Request failed: ' + err;
                 btn.disabled = false;
             });
     }
