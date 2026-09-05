@@ -418,13 +418,13 @@ if [ "$RUN_AS_OXIDIZED" = true ]; then
     if [ -f "$INSTALL_DIR/requirements.txt" ]; then
         su - oxidized -c "'$INSTALL_DIR/venv/bin/pip' install -q -r '$INSTALL_DIR/requirements.txt'"
     else
-        su - oxidized -c "'$INSTALL_DIR/venv/bin/pip' install -q Flask==2.3.7 PyYAML==6.0.1 requests==2.31.0 gunicorn==21.2.0 Werkzeug==2.3.7"
+        su - oxidized -c "'$INSTALL_DIR/venv/bin/pip' install -q Flask==2.3.3 PyYAML==6.0.1 requests==2.31.0 gunicorn==21.2.0 Werkzeug==2.3.7"
     fi
 else
     if [ -f "$INSTALL_DIR/requirements.txt" ]; then
         "$INSTALL_DIR/venv/bin/pip" install -q -r "$INSTALL_DIR/requirements.txt"
     else
-        "$INSTALL_DIR/venv/bin/pip" install -q Flask==2.3.7 PyYAML==6.0.1 requests==2.31.0 gunicorn==21.2.0 Werkzeug==2.3.7
+        "$INSTALL_DIR/venv/bin/pip" install -q Flask==2.3.3 PyYAML==6.0.1 requests==2.31.0 gunicorn==21.2.0 Werkzeug==2.3.7
     fi
 fi
 
