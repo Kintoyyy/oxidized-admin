@@ -795,8 +795,25 @@ def api_oxidized_fetch(device_name):
     """Trigger a live config fetch for a device (used by the 'Update Configuration' button)."""
     group = get_device_group(device_name)
     config = get_oxidized_node_config(device_name, group)
+
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
     if config is None:
+        c.execute('''INSERT INTO backup_history (device_ip, device_name, status, error_message)
+                     VALUES (?, ?, 'error', 'Failed to fetch configuration from Oxidized')''',
+                  (next((d['ip'] for d in read_router_db() if d['name'] == device_name), None), device_name))
+        conn.commit()
+        conn.close()
         return jsonify({'status': 'error', 'message': 'Failed to fetch configuration from Oxidized'}), 500
+
+    file_hash = hashlib.sha256(config.encode('utf-8', errors='ignore')).hexdigest()
+    c.execute('''INSERT INTO backup_history (device_ip, device_name, file_hash, file_size, status)
+                 VALUES (?, ?, ?, ?, 'success')''',
+              (next((d['ip'] for d in read_router_db() if d['name'] == device_name), None),
+               device_name, file_hash, len(config)))
+    conn.commit()
+    conn.close()
+
     log_audit('device_config_updated', 'device', device_name)
     return jsonify({'status': 'success', 'message': 'Configuration updated', 'content': config})
 
@@ -1214,26 +1231,36 @@ a { color: inherit; text-decoration: none; }
 h1 { font-size: 20px; font-weight: 600; margin-bottom: 1.25rem; }
 code, pre { font-family: ui-monospace, "SF Mono", Consolas, monospace; }
 
-.topbar {
-    position: sticky; top: 0; z-index: 20;
-    display: flex; align-items: center; justify-content: space-between;
-    height: 52px; padding: 0 1.25rem;
-    background: rgba(9, 9, 11, 0.92);
-    backdrop-filter: blur(8px);
-    border-bottom: 1px solid var(--border);
+.shell { display: flex; min-height: 100vh; align-items: stretch; }
+.sidebar {
+    width: 208px; flex-shrink: 0;
+    background: var(--card); border-right: 1px solid var(--border);
+    display: flex; flex-direction: column;
+    padding: 0.85rem 0.6rem;
+    position: sticky; top: 0; height: 100vh; overflow-y: auto;
 }
-.topbar .brand { font-weight: 600; font-size: 14px; display: flex; align-items: center; gap: 6px; }
-.topbar nav { display: flex; align-items: center; gap: 2px; }
-.topbar nav a {
-    padding: 6px 10px; border-radius: var(--radius);
+.sidebar .brand {
+    font-weight: 600; font-size: 13px; padding: 4px 8px 14px;
+    color: var(--foreground); display: block;
+}
+.sidebar nav { display: flex; flex-direction: column; gap: 2px; flex: 1; }
+.sidebar nav a {
+    padding: 7px 9px; border-radius: var(--radius);
     font-size: 13px; color: var(--muted-foreground);
     transition: background .15s, color .15s;
 }
-.topbar nav a:hover { background: var(--accent); color: var(--foreground); }
-.topbar nav a.active { background: var(--accent); color: var(--foreground); }
-.topbar .right { display: flex; align-items: center; gap: 0.5rem; }
+.sidebar nav a:hover { background: var(--accent); color: var(--foreground); }
+.sidebar nav a.active { background: var(--accent); color: var(--foreground); font-weight: 500; }
+.sidebar .bottom { padding-top: 0.6rem; margin-top: 0.6rem; border-top: 1px solid var(--border); }
+.sidebar .bottom a {
+    display: block; padding: 7px 9px; border-radius: var(--radius);
+    font-size: 13px; color: var(--muted-foreground);
+}
+.sidebar .bottom a:hover { background: var(--accent); color: var(--foreground); }
 
+.main { flex: 1; min-width: 0; }
 .page { max-width: 1280px; margin: 0 auto; padding: 1.5rem; }
+.page-full { max-width: none; padding: 1.5rem; }
 .page-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 1.25rem; }
 .page-header h1 { margin-bottom: 0; }
 
@@ -1330,8 +1357,8 @@ table.table tbody tr:hover td { background: var(--accent); }
 .auth-logo { text-align: center; margin-bottom: 1.5rem; font-size: 15px; font-weight: 600; color: var(--muted-foreground); }
 '''
 
-def render_navbar(active):
-    """Top navbar shared across all authenticated pages, with the current section highlighted."""
+def render_sidebar(active):
+    """Left sidebar shared across all authenticated pages, with the current section highlighted."""
     def link(endpoint, label):
         cls = ' class="active"' if endpoint == active else ''
         return '<a' + cls + ' href="{{ url_for(\'' + endpoint + '\') }}">' + label + '</a>'
@@ -1342,11 +1369,11 @@ def render_navbar(active):
         link('settings', 'Settings') +
         link('manage_users', 'Users')
     )
-    return ('''<header class="topbar">
+    return ('''<aside class="sidebar">
         <a class="brand" href="{{ url_for('dashboard') }}">Oxidized Manager</a>
         <nav>''' + links + '''</nav>
-        <div class="right"><a class="btn btn-ghost btn-sm" href="{{ url_for('logout') }}">Logout</a></div>
-    </header>
+        <div class="bottom"><a href="{{ url_for('logout') }}">Logout</a></div>
+    </aside>
     ''')
 
 LOGIN_TEMPLATE = '''<!DOCTYPE html>
@@ -1355,114 +1382,34 @@ LOGIN_TEMPLATE = '''<!DOCTYPE html>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Login - Oxidized Manager</title>
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
-            min-height: 100vh;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-        .login-container {
-            background: #1e293b;
-            border: 1px solid #334155;
-            border-radius: 12px;
-            padding: 2rem;
-            width: 100%;
-            max-width: 400px;
-            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
-        }
-        .logo {
-            text-align: center;
-            margin-bottom: 2rem;
-            font-size: 28px;
-            font-weight: 700;
-            background: linear-gradient(135deg, #3b82f6, #06b6d4);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-        }
-        h1 {
-            color: #f1f5f9;
-            font-size: 24px;
-            margin-bottom: 2rem;
-            text-align: center;
-        }
-        .form-group {
-            margin-bottom: 1.5rem;
-        }
-        label {
-            display: block;
-            color: #cbd5e1;
-            font-size: 14px;
-            font-weight: 500;
-            margin-bottom: 0.5rem;
-        }
-        input {
-            width: 100%;
-            padding: 10px 12px;
-            background: #0f172a;
-            border: 1px solid #334155;
-            border-radius: 6px;
-            color: #f1f5f9;
-            font-size: 14px;
-        }
-        input:focus {
-            outline: none;
-            border-color: #3b82f6;
-            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
-        }
-        button {
-            width: 100%;
-            padding: 10px;
-            background: #2563eb;
-            border: none;
-            border-radius: 6px;
-            color: white;
-            font-size: 14px;
-            font-weight: 600;
-            cursor: pointer;
-            transition: background 0.2s;
-        }
-        button:hover {
-            background: #1d4ed8;
-        }
-        .alert {
-            padding: 12px;
-            border-radius: 6px;
-            margin-bottom: 1.5rem;
-            font-size: 14px;
-        }
-        .alert-danger {
-            background: rgba(239, 68, 68, 0.1);
-            color: #f87171;
-        }
-    </style>
+    <style>''' + BASE_CSS + '''</style>
 </head>
 <body>
-    <div class="login-container">
-        <div class="logo">⚙️ Oxidized</div>
-        <h1>Manager</h1>
-        
-        {% with messages = get_flashed_messages(category_filter=['danger']) %}
-            {% if messages %}
-                <div class="alert alert-danger">{{ messages[0] }}</div>
-            {% endif %}
-        {% endwith %}
-        
-        <form method="POST">
-            <div class="form-group">
-                <label>Username</label>
-                <input type="text" name="username" required>
-            </div>
-            <div class="form-group">
-                <label>Password</label>
-                <input type="password" name="password" required>
-            </div>
-            <button type="submit">Sign in</button>
-        </form>
+<div class="auth-shell">
+    <div class="auth-card card">
+        <div class="card-content">
+            <div class="auth-logo">Oxidized Manager</div>
+
+            {% with messages = get_flashed_messages(category_filter=['danger']) %}
+                {% if messages %}
+                    <div class="alert alert-danger">{{ messages[0] }}</div>
+                {% endif %}
+            {% endwith %}
+
+            <form method="POST">
+                <div class="field">
+                    <label>Username</label>
+                    <input type="text" name="username" required>
+                </div>
+                <div class="field">
+                    <label>Password</label>
+                    <input type="password" name="password" required>
+                </div>
+                <button type="submit" class="btn" style="width: 100%;">Sign in</button>
+            </form>
+        </div>
     </div>
+</div>
 </body>
 </html>'''
 
@@ -1472,112 +1419,37 @@ SETUP_TEMPLATE = '''<!DOCTYPE html>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Setup - Oxidized Manager</title>
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
-            min-height: 100vh;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            padding: 1rem;
-        }
-        .setup-container {
-            background: #1e293b;
-            border: 1px solid #334155;
-            border-radius: 12px;
-            padding: 3rem 2rem;
-            width: 100%;
-            max-width: 500px;
-            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
-        }
-        h1 {
-            color: #f1f5f9;
-            font-size: 28px;
-            margin-bottom: 1rem;
-            background: linear-gradient(135deg, #3b82f6, #06b6d4);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-        }
-        .subtitle {
-            color: #cbd5e1;
-            font-size: 14px;
-            margin-bottom: 2rem;
-        }
-        .form-group {
-            margin-bottom: 1.5rem;
-        }
-        label {
-            display: block;
-            color: #cbd5e1;
-            font-size: 13px;
-            font-weight: 600;
-            margin-bottom: 0.5rem;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-        input {
-            width: 100%;
-            padding: 10px 12px;
-            background: #0f172a;
-            border: 1px solid #334155;
-            border-radius: 6px;
-            color: #f1f5f9;
-            font-size: 14px;
-        }
-        input:focus {
-            outline: none;
-            border-color: #3b82f6;
-            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
-        }
-        button {
-            width: 100%;
-            padding: 12px;
-            background: #2563eb;
-            border: none;
-            border-radius: 6px;
-            color: white;
-            font-size: 14px;
-            font-weight: 700;
-            cursor: pointer;
-            transition: background 0.2s;
-        }
-        button:hover {
-            background: #1d4ed8;
-        }
-        .help-text {
-            color: #64748b;
-            font-size: 12px;
-            margin-top: 0.25rem;
-        }
-    </style>
+    <style>''' + BASE_CSS + '''</style>
 </head>
 <body>
-    <div class="setup-container">
-        <h1>Initial Setup</h1>
-        <p class="subtitle">Create your admin account to get started</p>
-        
-        <form method="POST">
-            <div class="form-group">
-                <label>Admin Username</label>
-                <input type="text" name="username" value="admin" required>
-                <div class="help-text">You can change this after setup</div>
-            </div>
-            
-            <div class="form-group">
-                <label>Admin Password</label>
-                <input type="password" name="password" placeholder="Min 8 characters" required minlength="8">
-            </div>
-            
-            <div class="form-group">
-                <label>Email Address</label>
-                <input type="email" name="email" placeholder="admin@example.com">
-            </div>
-            
-            <button type="submit">Create Admin Account</button>
-        </form>
+<div class="auth-shell">
+    <div class="auth-card card" style="max-width: 440px;">
+        <div class="card-content">
+            <h1 style="margin-bottom: 0.35rem;">Initial Setup</h1>
+            <p class="muted" style="font-size: 13px; margin-bottom: 1.5rem;">Create your admin account to get started</p>
+
+            <form method="POST">
+                <div class="field">
+                    <label>Admin Username</label>
+                    <input type="text" name="username" value="admin" required>
+                    <div class="help-text">You can change this after setup</div>
+                </div>
+
+                <div class="field">
+                    <label>Admin Password</label>
+                    <input type="password" name="password" placeholder="Min 8 characters" required minlength="8">
+                </div>
+
+                <div class="field">
+                    <label>Email Address</label>
+                    <input type="email" name="email" placeholder="admin@example.com">
+                </div>
+
+                <button type="submit" class="btn" style="width: 100%;">Create Admin Account</button>
+            </form>
+        </div>
     </div>
+</div>
 </body>
 </html>'''
 
@@ -1587,184 +1459,34 @@ DASHBOARD_TEMPLATE = '''<!DOCTYPE html>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Dashboard - Oxidized Manager</title>
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: #0f172a;
-            color: #f1f5f9;
-        }
-        .navbar {
-            background: #1e293b;
-            border-bottom: 1px solid #334155;
-            padding: 1rem 2rem;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-        .navbar h1 {
-            font-size: 20px;
-            background: linear-gradient(135deg, #3b82f6, #06b6d4);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-        }
-        .nav-links {
-            display: flex;
-            gap: 2rem;
-        }
-        .nav-links a {
-            color: #cbd5e1;
-            text-decoration: none;
-            font-size: 14px;
-            transition: color 0.2s;
-        }
-        .nav-links a:hover {
-            color: #3b82f6;
-        }
-        .logout-btn {
-            color: #ef4444;
-            cursor: pointer;
-        }
-        .container {
-            max-width: 1400px;
-            margin: 0 auto;
-            padding: 2rem;
-        }
-        .stats-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 1rem;
-            margin-bottom: 2rem;
-        }
-        .stat-card {
-            background: #1e293b;
-            border: 1px solid #334155;
-            border-radius: 8px;
-            padding: 1.5rem;
-            text-align: center;
-        }
-        .stat-label {
-            color: #64748b;
-            font-size: 12px;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            margin-bottom: 0.5rem;
-        }
-        .stat-value {
-            font-size: 32px;
-            font-weight: 700;
-            background: linear-gradient(135deg, #3b82f6, #06b6d4);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-        }
-        table.devices-table {
-            width: 100%;
-            border-collapse: collapse;
-            background: #1e293b;
-            border: 1px solid #334155;
-            border-radius: 8px;
-            overflow: hidden;
-        }
-        table.devices-table th, table.devices-table td {
-            padding: 12px;
-            text-align: left;
-            border-bottom: 1px solid #334155;
-            font-size: 14px;
-        }
-        table.devices-table th {
-            background: #334155;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            font-size: 12px;
-        }
-        table.devices-table tr:hover td {
-            background: #26344a;
-        }
-        .device-ip {
-            font-family: monospace;
-            font-size: 12px;
-            color: #64748b;
-        }
-        .status-badge {
-            display: inline-block;
-            padding: 4px 8px;
-            border-radius: 4px;
-            font-size: 11px;
-            font-weight: 600;
-            text-transform: uppercase;
-        }
-        .status-success {
-            background: rgba(16, 185, 129, 0.1);
-            color: #10b981;
-        }
-        .status-error {
-            background: rgba(239, 68, 68, 0.1);
-            color: #ef4444;
-        }
-        .status-pending {
-            background: rgba(107, 114, 128, 0.1);
-            color: #9ca3af;
-        }
-        .device-actions {
-            margin-top: 1rem;
-            display: flex;
-            gap: 0.5rem;
-        }
-        .btn {
-            padding: 6px 12px;
-            border: 1px solid #334155;
-            background: transparent;
-            color: #3b82f6;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 12px;
-            transition: all 0.2s;
-        }
-        .btn:hover {
-            background: #334155;
-        }
-        .btn-primary {
-            background: #2563eb;
-            color: white;
-            border-color: #2563eb;
-        }
+    <style>''' + BASE_CSS + '''
     </style>
 </head>
 <body>
-    <div class="navbar">
-        <h1>⚙️ Oxidized Manager</h1>
-        <div class="nav-links">
-            <a href="{{ url_for('manage_devices') }}">Devices</a>
-            <a href="{{ url_for('manage_config') }}">Config</a>
-            <a href="{{ url_for('settings') }}">Settings</a>
-            <a href="{{ url_for('manage_users') }}">Users</a>
-            <a href="{{ url_for('logout') }}" class="logout-btn">Logout</a>
+<div class="shell">
+''' + render_sidebar('dashboard') + '''
+<main class="main"><div class="page">
+    <div class="stats-grid">
+        <div class="stat-card">
+            <div class="stat-label">Total Devices</div>
+            <div class="stat-value">{{ stats.total }}</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label">Healthy</div>
+            <div class="stat-value" style="color: #4ade80;">{{ stats.healthy }}</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label">Pending</div>
+            <div class="stat-value" style="color: #fbbf24;">{{ stats.pending }}</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label">Failed</div>
+            <div class="stat-value" style="color: #f87171;">{{ stats.failed }}</div>
         </div>
     </div>
-    
-    <div class="container">
-        <div class="stats-grid">
-            <div class="stat-card">
-                <div class="stat-label">Total Devices</div>
-                <div class="stat-value">{{ stats.total }}</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">Healthy</div>
-                <div class="stat-value" style="color: #10b981;">{{ stats.healthy }}</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">Pending</div>
-                <div class="stat-value" style="color: #f59e0b;">{{ stats.pending }}</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">Failed</div>
-                <div class="stat-value" style="color: #ef4444;">{{ stats.failed }}</div>
-            </div>
-        </div>
-        
-        <table class="devices-table">
+
+    <div class="table-wrap">
+        <table class="table">
             <thead>
                 <tr>
                     <th>Name</th>
@@ -1784,33 +1506,36 @@ DASHBOARD_TEMPLATE = '''<!DOCTYPE html>
                 <tr>
                     <td>
                         <div><strong>{{ device.name }}</strong></div>
-                        <div class="device-ip">{{ device.ip }}</div>
+                        <div class="muted" style="font-family: ui-monospace, monospace; font-size: 12px;">{{ device.ip }}</div>
                     </td>
                     <td>{{ device.model or '-' }}</td>
                     <td>{{ device.group or 'default' }}</td>
                     <td>
-                        <span class="status-badge status-{{ device.status or 'pending' }}">
+                        <span class="badge {{ 'badge-success' if device.status == 'success' else ('badge-destructive' if device.status == 'error' else 'badge-warning') }}">
                             {{ device.status or 'unknown' }}
                         </span>
                     </td>
-                    <td class="device-last-update" data-value="{{ device.last_update or '' }}">{{ device.last_update or 'never' }}</td>
+                    <td>{{ device.last_update or 'never' }}</td>
                     <td title="{{ device.stats_raw|tojson }}">{{ device.mtime or 'unknown' }}</td>
                     <td title="{{ device.stats_raw|tojson }}">{{ device.total_failures if device.total_failures is not none else '-' }}</td>
                     <td title="{{ device.stats_raw|tojson }}">{{ device.avg_run_time if device.avg_run_time is not none else '-' }}</td>
                     <td title="{{ device.stats_raw|tojson }}">{{ device.last_failure if device.last_failure is not none else 'never' }}</td>
                     <td>
-                        <a href="{{ url_for('device_detail', device_name=device.name) }}" class="btn">View</a>
-                        <button type="button" class="btn" onclick="location.href='{{ url_for('manage_devices') }}';">Edit</button>
-                        <button type="button" class="btn" id="update-btn-{{ loop.index0 }}" onclick="updateDeviceNow('{{ device.name }}', {{ loop.index0 }})">Update</button>
-                        <span id="update-result-{{ loop.index0 }}" style="font-size: 12px; margin-left: 0.5rem;"></span>
+                        <div class="flex">
+                            <a href="{{ url_for('device_detail', device_name=device.name) }}" class="btn btn-outline btn-sm">View</a>
+                            <button type="button" class="btn btn-outline btn-sm" id="update-btn-{{ loop.index0 }}" onclick="updateDeviceNow('{{ device.name }}', {{ loop.index0 }})">Update</button>
+                        </div>
+                        <span id="update-result-{{ loop.index0 }}" style="font-size: 12px;"></span>
                     </td>
                 </tr>
                 {% else %}
-                <tr><td colspan="9">No devices found. Sync from LibreNMS or add one from the Devices page.</td></tr>
+                <tr><td colspan="10">No devices found. Sync from LibreNMS or add one from the Devices page.</td></tr>
                 {% endfor %}
             </tbody>
         </table>
     </div>
+</div></main>
+</div>
 
     <script>
     function updateDeviceNow(name, idx) {
@@ -1847,219 +1572,42 @@ DEVICE_DETAIL_TEMPLATE = '''<!DOCTYPE html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Device - Oxidized Manager</title>
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: #0f172a;
-            color: #f1f5f9;
-        }
-        .navbar {
-            background: #1e293b;
-            border-bottom: 1px solid #334155;
-            padding: 1rem 2rem;
-        }
-        .navbar a {
-            color: #3b82f6;
-            text-decoration: none;
-        }
-        .container {
-            max-width: 1400px;
-            margin: 0 auto;
-            padding: 2rem;
-        }
-        h1 {
-            margin-bottom: 2rem;
-            background: linear-gradient(135deg, #3b82f6, #06b6d4);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-        }
-        .tabs {
-            display: flex;
-            gap: 1rem;
-            border-bottom: 1px solid #334155;
-            margin-bottom: 2rem;
-        }
-        .tab {
-            padding: 1rem;
-            background: none;
-            border: none;
-            color: #cbd5e1;
-            cursor: pointer;
-            font-size: 14px;
-            border-bottom: 2px solid transparent;
-            transition: all 0.2s;
-        }
-        .tab.active {
-            color: #3b82f6;
-            border-bottom-color: #3b82f6;
-        }
-        .tab-content {
-            display: none;
-        }
-        .tab-content.active {
-            display: block;
-        }
-        .config-viewer {
-            background: #1e293b;
-            border: 1px solid #334155;
-            border-radius: 8px;
-            padding: 1.5rem;
-            font-family: monospace;
-            font-size: 12px;
-            white-space: pre-wrap;
-            word-break: break-word;
-            overflow-x: auto;
-            max-height: 600px;
-            overflow-y: auto;
-            color: #e2e8f0;
-            line-height: 1.5;
-        }
-        .backup-item {
-            background: #1e293b;
-            border: 1px solid #334155;
-            border-radius: 8px;
-            padding: 1rem;
-            margin-bottom: 1rem;
-        }
-        .backup-date {
-            color: #64748b;
-            font-size: 12px;
-        }
-        .btn {
-            padding: 8px 14px;
-            background: #2563eb;
-            color: white;
-            border: none;
-            border-radius: 6px;
-            cursor: pointer;
-            font-size: 13px;
-        }
-        .btn:hover {
-            background: #1d4ed8;
-        }
-        .btn:disabled {
-            opacity: 0.6;
-            cursor: default;
-        }
-        table.versions-table {
-            width: 100%;
-            border-collapse: collapse;
-            background: #1e293b;
-            border: 1px solid #334155;
-            border-radius: 8px;
-            overflow: hidden;
-        }
-        table.versions-table th, table.versions-table td {
-            padding: 10px 12px;
-            text-align: left;
-            border-bottom: 1px solid #334155;
-            font-size: 13px;
-        }
-        table.versions-table th {
-            background: #334155;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            font-size: 11px;
-        }
-        .action-btn {
-            padding: 5px 10px;
-            background: transparent;
-            border: 1px solid #334155;
-            color: #3b82f6;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 12px;
-        }
-        .action-btn:hover {
-            background: #334155;
-        }
-        #version-content {
-            display: none;
-            margin-top: 1rem;
-            background: #0f172a;
-            border: 1px solid #334155;
-            border-radius: 8px;
-            padding: 1.5rem;
-            font-family: monospace;
-            font-size: 12px;
-            white-space: pre-wrap;
-            word-break: break-all;
-            max-height: 500px;
-            overflow-y: auto;
-            color: #e2e8f0;
-        }
-        .diff-picker {
-            background: #1e293b;
-            border: 1px solid #334155;
-            border-radius: 8px;
-            padding: 1rem 1.25rem;
-            margin-top: 1.5rem;
-        }
-        .diff-picker select {
-            padding: 6px 10px;
-            background: #0f172a;
-            border: 1px solid #334155;
-            border-radius: 6px;
-            color: #f1f5f9;
-            font-size: 13px;
-            min-width: 220px;
-        }
-        #diff-content {
-            display: none;
-            margin-top: 1rem;
-        }
-        .diff-pane {
-            background: #0f172a;
-            border: 1px solid #334155;
-            border-radius: 8px;
-            padding: 1rem;
-            font-family: monospace;
-            font-size: 12px;
-            white-space: pre-wrap;
-            word-break: break-all;
-            max-height: 600px;
-            overflow-y: auto;
-            color: #e2e8f0;
-        }
-        .diff-add {
-            background: rgba(16, 185, 129, 0.15);
-            color: #6ee7b7;
-        }
-        .diff-remove {
-            background: rgba(239, 68, 68, 0.15);
-            color: #fca5a5;
-        }
+    <title>{{ device_name }} - Oxidized Manager</title>
+    <style>''' + BASE_CSS + '''
+        .diff-add { background: rgba(16, 185, 129, 0.15); color: #6ee7b7; }
+        .diff-remove { background: rgba(239, 68, 68, 0.15); color: #fca5a5; }
+        #version-content, #diff-content { display: none; margin-top: 1rem; }
+        .diff-picker select { min-width: 220px; }
     </style>
 </head>
 <body>
-    <div class="navbar">
-        <a href="{{ url_for('dashboard') }}">← Back to Dashboard</a>
+<div class="shell">
+''' + render_sidebar('manage_devices') + '''
+<main class="main"><div class="page-full">
+    <div class="page-header">
+        <h1>{{ device_name }}</h1>
+        <a class="btn btn-outline btn-sm" href="{{ url_for('manage_devices') }}">Back to Devices</a>
     </div>
 
-    <div class="container">
-        <h1>{{ device_name }}</h1>
+    <div class="tabs">
+        <button class="tab active" onclick="showTab('config')">Config</button>
+        <button class="tab" onclick="showTab('history')">Versions</button>
+        <button class="tab" onclick="showTab('backups')">Backups</button>
+    </div>
 
-        <div class="tabs">
-            <button class="tab active" onclick="showTab('config')">Config</button>
-            <button class="tab" onclick="showTab('history')">Versions</button>
-            <button class="tab" onclick="showTab('backups')">Backups</button>
+    <div id="config" class="tab-content active">
+        <div class="flex mb-2">
+            <button class="btn" id="update-config-btn" onclick="updateConfig()">Update Configuration</button>
+            <button class="btn btn-outline" onclick="rawView('config-viewer', '{{ device_name }}.conf')">Raw</button>
+            <button class="btn btn-outline" onclick="downloadContent('config-viewer', '{{ device_name }}.conf')">Download</button>
+            <span id="update-config-result" style="font-size: 13px;"></span>
         </div>
+        <div class="code-viewer" id="config-viewer">{{ config or 'No configuration found' }}</div>
+    </div>
 
-        <div id="config" class="tab-content active">
-            <div style="margin-bottom: 1rem; display: flex; align-items: center; gap: 1rem;">
-                <button class="btn" id="update-config-btn" onclick="updateConfig()">Update Configuration</button>
-                <button class="btn" onclick="rawView('config-viewer', '{{ device_name }}.conf')">Raw</button>
-                <button class="btn" onclick="downloadContent('config-viewer', '{{ device_name }}.conf')">Download</button>
-                <span id="update-config-result" style="font-size: 13px;"></span>
-            </div>
-            <div class="config-viewer" id="config-viewer">{{ config or 'No configuration found' }}</div>
-        </div>
-
-        <div id="history" class="tab-content">
-            <table class="versions-table">
+    <div id="history" class="tab-content">
+        <div class="table-wrap">
+            <table class="table">
                 <thead>
                     <tr><th>Version</th><th>Date</th><th>Actions</th></tr>
                 </thead>
@@ -2071,7 +1619,7 @@ DEVICE_DETAIL_TEMPLATE = '''<!DOCTYPE html>
                             {{ v.epoch if v.epoch is defined else (v.date if v.date is defined else '-') }}
                         </td>
                         <td>
-                            <button class="action-btn" onclick='viewVersion({{ v|tojson }})'>View</button>
+                            <button class="btn btn-outline btn-sm" onclick='viewVersion({{ v|tojson }})'>View</button>
                         </td>
                     </tr>
                 {% else %}
@@ -2079,55 +1627,57 @@ DEVICE_DETAIL_TEMPLATE = '''<!DOCTYPE html>
                 {% endfor %}
                 </tbody>
             </table>
-            <div id="version-content"></div>
-            <div>
-                <div id="version-content-actions" style="display: none; margin-top: 0.5rem;">
-                    <button class="btn" onclick="rawView('version-content', '{{ device_name }}-version.conf')">Raw</button>
-                    <button class="btn" onclick="downloadContent('version-content', '{{ device_name }}-version.conf')">Download</button>
-                </div>
-            </div>
+        </div>
+        <div class="code-viewer" id="version-content"></div>
+        <div id="version-content-actions" class="flex" style="display: none; margin-top: 0.5rem;">
+            <button class="btn btn-outline btn-sm" onclick="rawView('version-content', '{{ device_name }}-version.conf')">Raw</button>
+            <button class="btn btn-outline btn-sm" onclick="downloadContent('version-content', '{{ device_name }}-version.conf')">Download</button>
+        </div>
 
-            <div class="diff-picker">
-                <h3 style="font-size: 14px; margin-bottom: 0.75rem;">Compare Versions</h3>
+        <div class="card" style="margin-top: 1.5rem;">
+            <div class="card-header"><div class="card-title">Compare Versions</div></div>
+            <div class="card-content">
                 <div style="display: flex; gap: 1rem; align-items: flex-end; flex-wrap: wrap;">
-                    <div>
-                        <label style="display:block; font-size:12px; color:#94a3b8; margin-bottom:4px;">Version</label>
+                    <div class="field" style="margin-bottom:0;">
+                        <label>Version</label>
                         <select id="diff-select-a"></select>
                     </div>
-                    <div>
-                        <label style="display:block; font-size:12px; color:#94a3b8; margin-bottom:4px;">Compared against</label>
+                    <div class="field" style="margin-bottom:0;">
+                        <label>Compared against</label>
                         <select id="diff-select-b"></select>
                     </div>
                     <button class="btn" onclick="compareDiffs()">Get Diffs</button>
                 </div>
             </div>
+        </div>
 
-            <div id="diff-content">
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
-                    <div>
-                        <div id="diff-label-old" style="font-size: 12px; color: #94a3b8; margin-bottom: 0.4rem;"></div>
-                        <div class="diff-pane" id="diff-old"></div>
-                    </div>
-                    <div>
-                        <div id="diff-label-new" style="font-size: 12px; color: #94a3b8; margin-bottom: 0.4rem;"></div>
-                        <div class="diff-pane" id="diff-new"></div>
-                    </div>
+        <div id="diff-content">
+            <div class="grid-2">
+                <div>
+                    <div id="diff-label-old" class="muted" style="font-size: 12px; margin-bottom: 0.4rem;"></div>
+                    <div class="code-viewer" id="diff-old"></div>
+                </div>
+                <div>
+                    <div id="diff-label-new" class="muted" style="font-size: 12px; margin-bottom: 0.4rem;"></div>
+                    <div class="code-viewer" id="diff-new"></div>
                 </div>
             </div>
         </div>
-
-        <div id="backups" class="tab-content">
-            {% for backup in backups %}
-            <div class="backup-item">
-                <div class="backup-date">{{ backup.created_at }}</div>
-                <div>Status: {{ backup.status }}</div>
-                <div>Size: {{ backup.file_size }} bytes</div>
-            </div>
-            {% else %}
-            <div style="color: #64748b;">No local backup records yet</div>
-            {% endfor %}
-        </div>
     </div>
+
+    <div id="backups" class="tab-content">
+        {% for backup in backups %}
+        <div class="card" style="padding: 1rem; margin-bottom: 0.75rem;">
+            <div class="muted" style="font-size: 12px;">{{ backup.created_at }}</div>
+            <div>Status: <span class="badge {{ 'badge-success' if backup.status == 'success' else 'badge-destructive' }}">{{ backup.status }}</span></div>
+            <div class="muted" style="font-size: 12px;">Size: {{ backup.file_size }} bytes</div>
+        </div>
+        {% else %}
+        <div class="muted">No backups logged yet through this app. Click "Update Configuration" on the Config tab to trigger one - Oxidized's own scheduled backups show up under Versions instead.</div>
+        {% endfor %}
+    </div>
+</div></main>
+</div>
 
     <script>
     function showTab(tabName) {
@@ -2330,182 +1880,77 @@ DEVICE_MANAGEMENT_TEMPLATE = '''<!DOCTYPE html>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Device Management - Oxidized Manager</title>
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: #0f172a;
-            color: #f1f5f9;
-        }
-        .navbar {
-            background: #1e293b;
-            border-bottom: 1px solid #334155;
-            padding: 1rem 2rem;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-        .navbar a {
-            color: #3b82f6;
-            text-decoration: none;
-        }
-        .container {
-            max-width: 1400px;
-            margin: 0 auto;
-            padding: 2rem;
-        }
-        .controls {
-            display: flex;
-            gap: 1rem;
-            margin-bottom: 2rem;
-        }
-        .btn {
-            padding: 10px 16px;
-            background: #2563eb;
-            color: white;
-            border: none;
-            border-radius: 6px;
-            cursor: pointer;
-        }
-        .btn:hover {
-            background: #1d4ed8;
-        }
-        .btn-secondary {
-            background: #1e293b;
-            border: 1px solid #334155;
-            color: #cbd5e1;
-            padding: 8px 12px;
-            font-size: 12px;
-        }
-        .btn-secondary:hover {
-            background: #334155;
-        }
-        .form-section {
-            background: #1e293b;
-            padding: 1.5rem;
-            border-radius: 8px;
-            margin-bottom: 2rem;
-            border: 1px solid #334155;
-        }
-        input, select {
-            padding: 8px 12px;
-            background: #0f172a;
-            border: 1px solid #334155;
-            border-radius: 4px;
-            color: #f1f5f9;
-            margin-bottom: 0.5rem;
-        }
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            background: #1e293b;
-            border: 1px solid #334155;
-            border-radius: 8px;
-            overflow: hidden;
-        }
-        th, td {
-            padding: 12px;
-            text-align: left;
-            border-bottom: 1px solid #334155;
-            font-size: 14px;
-        }
-        th {
-            background: #334155;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            font-size: 12px;
-        }
-        tr:hover {
-            background: #334155;
-        }
-        .action-btn {
-            padding: 6px 12px;
-            margin-right: 0.5rem;
-            background: transparent;
-            border: 1px solid #334155;
-            color: #3b82f6;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 12px;
-        }
-        .action-btn:hover {
-            background: #334155;
-        }
-        .action-btn.test {
-            color: #10b981;
-        }
-        .action-btn.delete {
-            color: #ef4444;
-        }
-        .test-result {
-            display: none;
-        }
-        .test-result.show {
-            display: table-row;
-        }
-        .test-result td {
-            padding: 10px 12px;
-            font-size: 12px;
-            text-align: center;
-        }
-        .test-result.success {
-            background: rgba(16, 185, 129, 0.1);
-            color: #10b981;
-        }
-        .test-result.error {
-            background: rgba(239, 68, 68, 0.1);
-            color: #f87171;
-        }
-        .group-badge {
-            background: #334155;
-            padding: 4px 8px;
-            border-radius: 3px;
-            font-size: 12px;
-        }
+    <style>''' + BASE_CSS + '''
+        .test-result { display: none; }
+        .test-result.show { display: table-row; }
+        .test-result td { padding: 10px 12px; font-size: 12px; text-align: center; }
+        .test-result.success { background: rgba(34, 197, 94, 0.1); color: #4ade80; }
+        .test-result.error { background: rgba(239, 68, 68, 0.1); color: #f87171; }
     </style>
 </head>
 <body>
-    <div class="navbar">
-        <h2>Device Management</h2>
-        <div>
-            <button class="btn btn-secondary" onclick="location.href='{{ url_for('manage_groups') }}'">Manage Groups</button>
-            <a href="{{ url_for('dashboard') }}" style="margin-left: 1rem;">← Back</a>
+<div class="shell">
+''' + render_sidebar('manage_devices') + '''
+<main class="main"><div class="page">
+    <div class="page-header">
+        <h1>Device Management</h1>
+        <div class="flex">
+            <button class="btn btn-outline btn-sm" onclick="location.href='{{ url_for('manage_groups') }}'">Manage Groups</button>
+            <button class="btn btn-sm" onclick="showAddForm()">+ Add Device</button>
         </div>
     </div>
-    
-    <div class="container">
-        <div class="controls">
-            <button class="btn" onclick="showAddForm()">+ Add Device</button>
-        </div>
-        
-        <div id="add-form" class="form-section" style="display: none;">
-            <h3 id="form-title" style="margin-bottom: 1rem;">Add New Device</h3>
+
+    <div id="add-form" class="card mb-2" style="display: none;">
+        <div class="card-header"><div class="card-title" id="form-title">Add New Device</div></div>
+        <div class="card-content">
             <form method="POST" id="device-form">
                 <input type="hidden" name="action" id="form-action" value="add">
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem;">
-                    <input type="text" name="name" id="field-name" placeholder="Device Name" required>
-                    <input type="text" name="ip" id="field-ip" placeholder="IP Address (10.25.1.1)" required>
-                    <input type="text" name="model" id="field-model" placeholder="Model (RouterOS, Cisco IOS, JunOS)">
-                    <input type="text" name="username" id="field-username" placeholder="SSH Username">
-                    <input type="password" name="password" id="field-password" placeholder="SSH Password">
-                    <select name="group" id="field-group" required>
-                        {% for g in groups %}
-                        <option value="{{ g }}">{{ g }}</option>
-                        {% else %}
-                        <option value="default">default</option>
-                        {% endfor %}
-                    </select>
-                    <input type="number" name="ssh_port" id="field-ssh_port" placeholder="SSH Port" value="22" min="1" max="65535">
+                <div class="grid-2 mb-2">
+                    <div class="field">
+                        <label>Device Name</label>
+                        <input type="text" name="name" id="field-name" placeholder="Device Name" required>
+                    </div>
+                    <div class="field">
+                        <label>IP Address</label>
+                        <input type="text" name="ip" id="field-ip" placeholder="10.25.1.1" required>
+                    </div>
+                    <div class="field">
+                        <label>Model</label>
+                        <input type="text" name="model" id="field-model" placeholder="RouterOS, Cisco IOS, JunOS">
+                    </div>
+                    <div class="field">
+                        <label>SSH Username</label>
+                        <input type="text" name="username" id="field-username" placeholder="SSH Username">
+                    </div>
+                    <div class="field">
+                        <label>SSH Password</label>
+                        <input type="password" name="password" id="field-password" placeholder="SSH Password">
+                    </div>
+                    <div class="field">
+                        <label>Group</label>
+                        <select name="group" id="field-group" required>
+                            {% for g in groups %}
+                            <option value="{{ g }}">{{ g }}</option>
+                            {% else %}
+                            <option value="default">default</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="field">
+                        <label>SSH Port</label>
+                        <input type="number" name="ssh_port" id="field-ssh_port" placeholder="22" value="22" min="1" max="65535">
+                    </div>
                 </div>
-                <div style="display: flex; gap: 0.5rem;">
+                <div class="flex">
                     <button type="submit" class="btn">Save Device</button>
-                    <button type="button" class="btn btn-secondary" onclick="hideForm()">Cancel</button>
+                    <button type="button" class="btn btn-outline" onclick="hideForm()">Cancel</button>
                 </div>
             </form>
         </div>
-        
-        <table>
+    </div>
+
+    <div class="table-wrap">
+        <table class="table">
             <thead>
                 <tr>
                     <th>Name</th>
@@ -2522,26 +1967,30 @@ DEVICE_MANAGEMENT_TEMPLATE = '''<!DOCTYPE html>
                     <td><strong>{{ device.name }}</strong></td>
                     <td><code style="font-size: 11px;">{{ device.ip }}</code></td>
                     <td>{{ device.model or '-' }}</td>
-                    <td><span class="group-badge">{{ device.group }}</span></td>
+                    <td><span class="badge">{{ device.group }}</span></td>
                     <td>{{ device.get('ssh_port', 22) }}</td>
                     <td>
-                        <button class="action-btn test" onclick="testSSH('{{ device.name }}', '{{ device.ip }}', '{{ device.username }}', '{{ device.password }}', {{ device.get('ssh_port', 22) }})">Test SSH</button>
-                        <button class="action-btn" onclick='editDevice({{ device|tojson }})'>Edit</button>
+                        <button class="btn btn-outline btn-sm" onclick="testSSH('{{ device.name }}', '{{ device.ip }}', '{{ device.username }}', '{{ device.password }}', {{ device.get('ssh_port', 22) }})">Test SSH</button>
+                        <button class="btn btn-outline btn-sm" onclick='editDevice({{ device|tojson }})'>Edit</button>
                         <form method="POST" style="display: inline;">
                             <input type="hidden" name="action" value="delete">
                             <input type="hidden" name="ip" value="{{ device.ip }}">
-                            <button type="submit" class="action-btn delete" onclick="return confirm('Delete device?')">Delete</button>
+                            <button type="submit" class="btn btn-outline btn-sm" style="color: #f87171;" onclick="return confirm('Delete device?')">Delete</button>
                         </form>
                     </td>
                 </tr>
                 <tr id="test-result-{{ loop.index0 }}" class="test-result">
                     <td colspan="6"></td>
                 </tr>
+                {% else %}
+                <tr><td colspan="6">No devices yet. Click "+ Add Device" to add one.</td></tr>
                 {% endfor %}
             </tbody>
         </table>
     </div>
-    
+</div></main>
+</div>
+
     <script>
     function resetForm() {
         document.getElementById('device-form').reset();
@@ -2643,60 +2092,25 @@ CONFIG_MANAGEMENT_TEMPLATE = '''<!DOCTYPE html>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Config Management - Oxidized Manager</title>
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: #0f172a;
-            color: #f1f5f9;
-        }
-        .navbar {
-            background: #1e293b;
-            border-bottom: 1px solid #334155;
-            padding: 1rem 2rem;
-            display: flex;
-            justify-content: space-between;
-        }
-        .container {
-            max-width: 1400px;
-            margin: 0 auto;
-            padding: 2rem;
-        }
-        textarea {
-            width: 100%;
-            height: 600px;
-            background: #0f172a;
-            color: #e2e8f0;
-            border: 1px solid #334155;
-            border-radius: 8px;
-            padding: 1rem;
-            font-family: monospace;
-            font-size: 12px;
-            margin-bottom: 1rem;
-        }
-        .btn {
-            padding: 10px 16px;
-            background: #2563eb;
-            color: white;
-            border: none;
-            border-radius: 6px;
-            cursor: pointer;
-        }
+    <style>''' + BASE_CSS + '''
+        textarea { height: 75vh; font-size: 13px; }
     </style>
 </head>
 <body>
-    <div class="navbar">
-        <h2>Oxidized Configuration</h2>
-        <a href="{{ url_for('dashboard') }}">← Back</a>
+<div class="shell">
+''' + render_sidebar('manage_config') + '''
+<main class="main"><div class="page-full">
+    <div class="page-header">
+        <h1>Oxidized Configuration</h1>
     </div>
-    
-    <div class="container">
-        <form method="POST">
-            <input type="hidden" name="action" value="update_yaml">
-            <textarea name="yaml_content" required>{{ config_yaml }}</textarea>
-            <button type="submit" class="btn">Save Configuration</button>
-        </form>
-    </div>
+
+    <form method="POST">
+        <input type="hidden" name="action" value="update_yaml">
+        <textarea name="yaml_content" required class="mb-2">{{ config_yaml }}</textarea>
+        <button type="submit" class="btn">Save Configuration</button>
+    </form>
+</div></main>
+</div>
 </body>
 </html>'''
 
@@ -2706,196 +2120,93 @@ SETTINGS_TEMPLATE = '''<!DOCTYPE html>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Settings - Oxidized Manager</title>
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: #0f172a;
-            color: #f1f5f9;
-        }
-        .navbar {
-            background: #1e293b;
-            border-bottom: 1px solid #334155;
-            padding: 1rem 2rem;
-            display: flex;
-            justify-content: space-between;
-        }
-        .container {
-            max-width: 800px;
-            margin: 0 auto;
-            padding: 2rem;
-        }
-        .form-group {
-            margin-bottom: 1.5rem;
-        }
-        label {
-            display: block;
-            color: #cbd5e1;
-            font-size: 14px;
-            font-weight: 600;
-            margin-bottom: 0.5rem;
-        }
-        input, select {
-            width: 100%;
-            padding: 10px 12px;
-            background: #1e293b;
-            border: 1px solid #334155;
-            border-radius: 6px;
-            color: #f1f5f9;
-            font-size: 14px;
-        }
-        input:focus, select:focus {
-            outline: none;
-            border-color: #3b82f6;
-            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
-        }
-        .checkbox-group {
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-        }
-        .checkbox-group input {
-            width: auto;
-        }
-        .btn {
-            padding: 10px 16px;
-            background: #2563eb;
-            color: white;
-            border: none;
-            border-radius: 6px;
-            cursor: pointer;
-            font-size: 14px;
-        }
-        .btn:hover {
-            background: #1d4ed8;
-        }
-        .status {
-            padding: 12px;
-            border-radius: 6px;
-            margin-bottom: 1rem;
-            font-size: 14px;
-        }
-        .status-success {
-            background: rgba(16, 185, 129, 0.1);
-            color: #10b981;
-            border: 1px solid rgba(16, 185, 129, 0.2);
-        }
-        .status-error {
-            background: rgba(239, 68, 68, 0.1);
-            color: #f87171;
-            border: 1px solid rgba(239, 68, 68, 0.2);
-        }
-        .section {
-            background: #1e293b;
-            border: 1px solid #334155;
-            border-radius: 8px;
-            padding: 1.5rem;
-            margin-bottom: 2rem;
-        }
-        .section h2 {
-            font-size: 16px;
-            margin-bottom: 1rem;
-            color: #e2e8f0;
-        }
-        .btn-secondary {
-            background: #1e293b;
-            border: 1px solid #334155;
-            color: #cbd5e1;
-            padding: 10px 16px;
-            border-radius: 6px;
-            cursor: pointer;
-            font-size: 14px;
-        }
-        .btn-secondary:hover {
-            background: #334155;
-        }
-        .btn-secondary:disabled {
-            opacity: 0.6;
-            cursor: default;
-        }
-    </style>
+    <style>''' + BASE_CSS + '''</style>
 </head>
 <body>
-    <div class="navbar">
-        <h2>Settings</h2>
-        <a href="{{ url_for('dashboard') }}">← Back</a>
+<div class="shell">
+''' + render_sidebar('settings') + '''
+<main class="main"><div class="page" style="max-width: 760px;">
+    <div class="page-header"><h1>Settings</h1></div>
+
+    {% if oxidized_status %}
+    <div class="alert alert-success">Oxidized API is running and reachable</div>
+    {% else %}
+    <div class="alert alert-danger">Oxidized API is not reachable. Please check your installation.</div>
+    {% endif %}
+
+    <div class="flex mb-2" style="flex-wrap: wrap;">
+        <button type="button" class="btn btn-outline btn-sm" id="restart-oxidized-btn" onclick="restartOxidized()">Restart Oxidized Service</button>
+        <button type="button" class="btn btn-outline btn-sm" id="test-oxidized-btn" onclick="testOxidized()">Test Oxidized Connection</button>
+        <span id="restart-oxidized-result" style="font-size: 13px;"></span>
     </div>
+    <pre id="test-oxidized-result" class="code-viewer mb-2" style="display: none; max-height: 400px;"></pre>
 
-    <div class="container">
-        {% if oxidized_status %}
-        <div class="status status-success">✓ Oxidized API is running and reachable</div>
-        {% else %}
-        <div class="status status-error">✗ Oxidized API is not reachable. Please check your installation.</div>
-        {% endif %}
-
-        <div style="margin-bottom: 1rem; display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;">
-            <button type="button" class="btn-secondary" id="restart-oxidized-btn" onclick="restartOxidized()">Restart Oxidized Service</button>
-            <button type="button" class="btn-secondary" id="test-oxidized-btn" onclick="testOxidized()">Test Oxidized Connection</button>
-            <span id="restart-oxidized-result" style="font-size: 13px;"></span>
-        </div>
-        <pre id="test-oxidized-result" style="display: none; background: #0f172a; border: 1px solid #334155; border-radius: 6px; padding: 1rem; margin-bottom: 1.5rem; font-size: 12px; white-space: pre-wrap; word-break: break-all; max-height: 400px; overflow: auto;"></pre>
-
-        <form method="POST">
-            <div class="section">
-                <h2>Application Settings</h2>
-                <div class="form-group">
+    <form method="POST">
+        <div class="card mb-2">
+            <div class="card-header"><div class="card-title">Application Settings</div></div>
+            <div class="card-content">
+                <div class="field">
                     <label>Application Name</label>
                     <input type="text" name="app_name" value="{{ settings.app_name }}">
                 </div>
-                <div class="form-group">
+                <div class="field">
                     <label>Backup Retention (days)</label>
                     <input type="number" name="backup_retention_days" value="{{ settings.backup_retention_days }}" min="1">
                 </div>
-                <div class="form-group">
+                <div class="field">
                     <label>Oxidized API URL</label>
                     <input type="text" name="oxidized_api_url" value="{{ settings.oxidized_api_url }}">
                 </div>
             </div>
-            
-            <div class="section">
-                <h2>LibreNMS Integration (Optional)</h2>
-                <div class="form-group">
+        </div>
+
+        <div class="card mb-2">
+            <div class="card-header"><div class="card-title">LibreNMS Integration (Optional)</div></div>
+            <div class="card-content">
+                <div class="field">
                     <label>LibreNMS URL</label>
                     <input type="text" name="librenms_url" placeholder="http://librenms.example.com" value="{{ settings.librenms_url }}">
                 </div>
-                <div class="form-group">
+                <div class="field">
                     <label>LibreNMS API Token</label>
                     <input type="password" name="librenms_token" placeholder="Your API token here" value="{{ settings.librenms_token }}">
                 </div>
-                <div class="form-group checkbox-group">
-                    <input type="checkbox" name="librenms_sync_enabled" id="librenms_sync" {% if settings.librenms_sync_enabled %}checked{% endif %}>
+                <div class="flex" style="margin-bottom: 0;">
+                    <input type="checkbox" name="librenms_sync_enabled" id="librenms_sync" style="width: auto;" {% if settings.librenms_sync_enabled %}checked{% endif %}>
                     <label for="librenms_sync" style="margin: 0;">Enable automatic device sync from LibreNMS</label>
                 </div>
             </div>
-            
-            <div class="section">
-                <h2>GitHub Integration (Optional)</h2>
+        </div>
+
+        <div class="card mb-2">
+            <div class="card-header"><div class="card-title">GitHub Integration (Optional)</div></div>
+            <div class="card-content">
                 {% if not settings.has_gitpython %}
-                <div style="background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.2); color: #f87171; padding: 12px; border-radius: 6px; margin-bottom: 1rem;">
-                    ⚠ GitPython not installed. Run: <code>pip install GitPython</code>
-                </div>
+                <div class="alert alert-danger">GitPython not installed. Run: <code>pip install GitPython</code></div>
                 {% endif %}
-                <div class="form-group">
+                <div class="field">
                     <label>GitHub Repository URL</label>
                     <input type="text" name="github_repo_url" placeholder="https://github.com/user/oxidized-backups.git" value="{{ settings.github_repo_url }}">
                 </div>
-                <div class="form-group">
+                <div class="field">
                     <label>GitHub Personal Access Token</label>
                     <input type="password" name="github_token" placeholder="Your GitHub token here" value="{{ settings.github_token }}">
                 </div>
-                <div class="form-group">
+                <div class="field">
                     <label>GitHub Branch</label>
                     <input type="text" name="github_branch" placeholder="main" value="{{ settings.github_branch }}">
                 </div>
-                <div class="form-group checkbox-group">
-                    <input type="checkbox" name="github_sync_enabled" id="github_sync" {% if settings.github_sync_enabled %}checked{% endif %} {% if not settings.has_gitpython %}disabled{% endif %}>
+                <div class="flex" style="margin-bottom: 0;">
+                    <input type="checkbox" name="github_sync_enabled" id="github_sync" style="width: auto;" {% if settings.github_sync_enabled %}checked{% endif %} {% if not settings.has_gitpython %}disabled{% endif %}>
                     <label for="github_sync" style="margin: 0;">Push backups to GitHub</label>
                 </div>
             </div>
-            
-            <button type="submit" class="btn">Save Settings</button>
-        </form>
-    </div>
+        </div>
+
+        <button type="submit" class="btn">Save Settings</button>
+    </form>
+</div></main>
+</div>
 
     <script>
     function restartOxidized() {
@@ -2956,98 +2267,45 @@ GROUPS_MANAGEMENT_TEMPLATE = '''<!DOCTYPE html>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Group Management - Oxidized Manager</title>
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: #0f172a;
-            color: #f1f5f9;
-        }
-        .navbar {
-            background: #1e293b;
-            border-bottom: 1px solid #334155;
-            padding: 1rem 2rem;
-            display: flex;
-            justify-content: space-between;
-        }
-        .container {
-            max-width: 900px;
-            margin: 0 auto;
-            padding: 2rem;
-        }
-        .form-section {
-            background: #1e293b;
-            border: 1px solid #334155;
-            border-radius: 8px;
-            padding: 1.5rem;
-            margin-bottom: 2rem;
-        }
-        input, textarea {
-            padding: 8px 12px;
-            background: #0f172a;
-            border: 1px solid #334155;
-            border-radius: 4px;
-            color: #f1f5f9;
-            margin-bottom: 0.5rem;
-            width: 100%;
-        }
-        .btn {
-            padding: 10px 16px;
-            background: #2563eb;
-            color: white;
-            border: none;
-            border-radius: 6px;
-            cursor: pointer;
-            margin-bottom: 1rem;
-        }
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            background: #1e293b;
-            border: 1px solid #334155;
-            border-radius: 8px;
-        }
-        th, td {
-            padding: 12px;
-            text-align: left;
-            border-bottom: 1px solid #334155;
-        }
-        th {
-            background: #334155;
-            font-weight: 600;
-        }
-        .action-btn {
-            padding: 6px 12px;
-            margin-right: 0.5rem;
-            background: transparent;
-            border: 1px solid #334155;
-            color: #3b82f6;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 12px;
-        }
-    </style>
+    <style>''' + BASE_CSS + '''</style>
 </head>
 <body>
-    <div class="navbar">
-        <h2>Device Groups</h2>
-        <a href="{{ url_for('dashboard') }}">← Back</a>
+<div class="shell">
+''' + render_sidebar('manage_devices') + '''
+<main class="main"><div class="page" style="max-width: 900px;">
+    <div class="page-header">
+        <h1>Device Groups</h1>
+        <a class="btn btn-outline btn-sm" href="{{ url_for('manage_devices') }}">Back to Devices</a>
     </div>
-    
-    <div class="container">
-        <div class="form-section">
-            <h3 style="margin-bottom: 1rem;">Create New Group</h3>
+
+    <div class="card mb-2">
+        <div class="card-header"><div class="card-title">Create New Group</div></div>
+        <div class="card-content">
             <form method="POST">
                 <input type="hidden" name="action" value="add">
-                <input type="text" name="name" placeholder="Group Name" required>
-                <textarea name="description" placeholder="Description (optional)" rows="2"></textarea>
-                <input type="text" name="default_username" placeholder="Default Username (optional)">
-                <input type="password" name="default_password" placeholder="Default Password (optional)">
+                <div class="field">
+                    <label>Group Name</label>
+                    <input type="text" name="name" placeholder="Group Name" required>
+                </div>
+                <div class="field">
+                    <label>Description</label>
+                    <textarea name="description" placeholder="Description (optional)" rows="2"></textarea>
+                </div>
+                <div class="field">
+                    <label>Default Username</label>
+                    <input type="text" name="default_username" placeholder="Default Username (optional)">
+                </div>
+                <div class="field">
+                    <label>Default Password</label>
+                    <input type="password" name="default_password" placeholder="Default Password (optional)">
+                </div>
                 <button type="submit" class="btn">Create Group</button>
             </form>
         </div>
-        
-        <table>
+    </div>
+
+    <div class="table-wrap">
+        <table class="table">
             <thead>
                 <tr>
                     <th>Group Name</th>
@@ -3066,14 +2324,18 @@ GROUPS_MANAGEMENT_TEMPLATE = '''<!DOCTYPE html>
                         <form method="POST" style="display: inline;">
                             <input type="hidden" name="action" value="delete">
                             <input type="hidden" name="group_id" value="{{ group.id }}">
-                            <button type="submit" class="action-btn" onclick="return confirm('Delete group?')">Delete</button>
+                            <button type="submit" class="btn btn-outline btn-sm" onclick="return confirm('Delete group?')">Delete</button>
                         </form>
                     </td>
                 </tr>
+                {% else %}
+                <tr><td colspan="4">No groups yet.</td></tr>
                 {% endfor %}
             </tbody>
         </table>
     </div>
+</div></main>
+</div>
 </body>
 </html>'''
 
@@ -3083,90 +2345,47 @@ USER_MANAGEMENT_TEMPLATE = '''<!DOCTYPE html>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>User Management - Oxidized Manager</title>
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: #0f172a;
-            color: #f1f5f9;
-        }
-        .navbar {
-            background: #1e293b;
-            border-bottom: 1px solid #334155;
-            padding: 1rem 2rem;
-            display: flex;
-            justify-content: space-between;
-        }
-        .container {
-            max-width: 900px;
-            margin: 0 auto;
-            padding: 2rem;
-        }
-        .btn {
-            padding: 10px 16px;
-            background: #2563eb;
-            color: white;
-            border: none;
-            border-radius: 6px;
-            cursor: pointer;
-            margin-bottom: 1rem;
-        }
-        .form-section {
-            background: #1e293b;
-            border: 1px solid #334155;
-            border-radius: 8px;
-            padding: 1.5rem;
-            margin-bottom: 2rem;
-        }
-        input {
-            padding: 8px 12px;
-            background: #0f172a;
-            border: 1px solid #334155;
-            border-radius: 4px;
-            color: #f1f5f9;
-            margin-right: 0.5rem;
-        }
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            background: #1e293b;
-            border: 1px solid #334155;
-            border-radius: 8px;
-        }
-        th, td {
-            padding: 12px;
-            text-align: left;
-            border-bottom: 1px solid #334155;
-        }
-        th {
-            background: #334155;
-            font-weight: 600;
-        }
-    </style>
+    <style>''' + BASE_CSS + '''</style>
 </head>
 <body>
-    <div class="navbar">
-        <h2>User Management</h2>
-        <a href="{{ url_for('dashboard') }}">← Back</a>
-    </div>
-    
-    <div class="container">
-        <div class="form-section">
-            <h3 style="margin-bottom: 1rem;">Create New User</h3>
+<div class="shell">
+''' + render_sidebar('manage_users') + '''
+<main class="main"><div class="page" style="max-width: 900px;">
+    <div class="page-header"><h1>User Management</h1></div>
+
+    <div class="card mb-2">
+        <div class="card-header"><div class="card-title">Create New User</div></div>
+        <div class="card-content">
             <form method="POST">
                 <input type="hidden" name="action" value="add">
-                <input type="text" name="username" placeholder="Username" required>
-                <input type="password" name="password" placeholder="Password" required>
-                <input type="email" name="email" placeholder="Email">
-                <select name="role">
-                    <option value="operator">Operator</option>
-                    <option value="admin">Admin</option>
-                </select>
+                <div class="grid-2">
+                    <div class="field">
+                        <label>Username</label>
+                        <input type="text" name="username" placeholder="Username" required>
+                    </div>
+                    <div class="field">
+                        <label>Password</label>
+                        <input type="password" name="password" placeholder="Password" required>
+                    </div>
+                    <div class="field">
+                        <label>Email</label>
+                        <input type="email" name="email" placeholder="Email">
+                    </div>
+                    <div class="field">
+                        <label>Role</label>
+                        <select name="role">
+                            <option value="operator">Operator</option>
+                            <option value="admin">Admin</option>
+                        </select>
+                    </div>
+                </div>
                 <button type="submit" class="btn">Add User</button>
             </form>
         </div>
-        
-        <table>
+    </div>
+
+    <div class="table-wrap">
+        <table class="table">
             <thead>
                 <tr>
                     <th>Username</th>
@@ -3180,13 +2399,17 @@ USER_MANAGEMENT_TEMPLATE = '''<!DOCTYPE html>
                 <tr>
                     <td>{{ user.username }}</td>
                     <td>{{ user.email or '-' }}</td>
-                    <td><strong>{{ user.role }}</strong></td>
+                    <td><span class="badge">{{ user.role }}</span></td>
                     <td>{{ user.last_login or 'Never' }}</td>
                 </tr>
+                {% else %}
+                <tr><td colspan="4">No users found.</td></tr>
                 {% endfor %}
             </tbody>
         </table>
     </div>
+</div></main>
+</div>
 </body>
 </html>'''
 
