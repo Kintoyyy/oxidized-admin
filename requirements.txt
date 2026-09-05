@@ -1,0 +1,9 @@
+Flask==2.3.7
+PyYAML==6.0.1
+requests==2.31.0
+gunicorn==21.2.0
+Werkzeug==2.3.7
+
+# Optional dependencies
+paramiko==3.3.1  # SSH connection testing
+GitPython==3.1.40  # GitHub integration
