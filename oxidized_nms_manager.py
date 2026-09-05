@@ -1479,7 +1479,9 @@ def librenms_alerts():
 
 # Shared shadcn-inspired design tokens + components, reused by every page.
 BASE_CSS = '''
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap');
 :root {
+    --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', 'Cascadia Code', Consolas, monospace;
     --background: #09090b;
     --foreground: #fafafa;
     --card: #18181b;
@@ -1504,7 +1506,7 @@ body {
 }
 a { color: inherit; text-decoration: none; }
 h1 { font-size: 20px; font-weight: 600; margin-bottom: 1.25rem; }
-code, pre { font-family: ui-monospace, "SF Mono", Consolas, monospace; }
+code, pre { font-family: var(--font-mono); }
 
 .shell { display: flex; min-height: 100vh; align-items: stretch; }
 .sidebar {
@@ -1560,7 +1562,7 @@ code, pre { font-family: ui-monospace, "SF Mono", Consolas, monospace; }
     background: var(--background); border: 1px solid var(--input); color: var(--foreground);
     font-size: 13px;
 }
-textarea { height: auto; padding: 8px 10px; font-family: ui-monospace, monospace; }
+textarea { height: auto; padding: 8px 10px; font-family: var(--font-mono); }
 input:focus, select:focus, textarea:focus {
     outline: none; border-color: var(--ring); box-shadow: 0 0 0 2px rgba(96, 165, 250, .25);
 }
@@ -1613,7 +1615,8 @@ table.table tbody tr:hover td { background: var(--accent); }
 
 .code-viewer {
     background: #000; border: 1px solid var(--border); border-radius: var(--radius);
-    padding: 1rem; font-size: 12px; white-space: pre-wrap; word-break: break-word;
+    padding: 1rem; font-family: var(--font-mono); font-size: 13px; line-height: 1.6;
+    white-space: pre-wrap; word-break: break-word;
     max-height: 600px; overflow: auto; color: #e4e4e7;
 }
 
