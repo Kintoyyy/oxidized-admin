@@ -87,14 +87,16 @@ info "Admin username:                $ADMIN_USERNAME"
 section "Checking for Existing Oxidized Installation"
 
 INSTALL_OXIDIZED=true
+NUKE_OXIDIZED=false
 
 if command -v oxidized &> /dev/null; then
     CURRENT_VERSION=$(oxidized --version 2>/dev/null || echo "unknown")
     info "Oxidized is already installed (version: $CURRENT_VERSION)"
     echo ""
     echo "  [s] Skip  - leave the existing install as-is (default)"
-    echo "  [n] Nuke  - uninstall and reinstall the oxidized gems fresh"
-    echo "              (existing device configs/backups under $CONFIG_DIR are kept)"
+    echo "  [n] Nuke  - uninstall and reinstall the oxidized gems fresh, and"
+    echo "              regenerate $CONFIG_DIR/config (the old one is backed up first)"
+    echo "              (device backups/router.db under $CONFIG_DIR are kept)"
     echo "  [c] Cancel - exit without changing anything"
     read -p "Choice [s/n/c]: " OXIDIZED_CHOICE
     OXIDIZED_CHOICE=${OXIDIZED_CHOICE:-s}
@@ -104,9 +106,10 @@ if command -v oxidized &> /dev/null; then
             error "Installation cancelled by user."
             ;;
         [Nn]*)
-            info "Nuking existing oxidized gems (backups/config will be preserved)..."
+            info "Nuking existing oxidized gems (backups/router.db will be preserved)..."
             gem uninstall oxidized oxidized-web oxidized-script -a -x -I || warn "Some gems may not have been installed; continuing"
             INSTALL_OXIDIZED=true
+            NUKE_OXIDIZED=true
             ;;
         *)
             info "Skipping Oxidized installation, keeping existing setup."
@@ -183,8 +186,8 @@ if [ "$INSTALL_OXIDIZED" = true ]; then
     gem install oxidized-script
 
     info "Verifying installation as 'oxidized' user..."
-    if su - oxidized -c "oxidized -v" &> /dev/null; then
-        OX_VERSION=$(su - oxidized -c "oxidized -v")
+    if sudo -u oxidized -H bash -c "oxidized -v" &> /dev/null; then
+        OX_VERSION=$(sudo -u oxidized -H bash -c "oxidized -v")
         info "✓ Oxidized installed: $OX_VERSION"
     else
         warn "Could not verify oxidized as the 'oxidized' user. Check the gem install output above."
@@ -207,6 +210,13 @@ fi
 section "Configuring Oxidized"
 
 mkdir -p "$CONFIG_DIR"
+
+if [ -f "$CONFIG_DIR/config" ] && [ "$NUKE_OXIDIZED" = true ]; then
+    CONFIG_BACKUP="$CONFIG_DIR/config.bak.$(date +%Y%m%d%H%M%S)"
+    cp "$CONFIG_DIR/config" "$CONFIG_BACKUP"
+    info "Backed up existing config to $CONFIG_BACKUP"
+    rm -f "$CONFIG_DIR/config"
+fi
 
 if [ ! -f "$CONFIG_DIR/config" ]; then
     info "Creating minimal Oxidized config..."
@@ -259,7 +269,7 @@ fi
 if [ "$INSTALL_OXIDIZED" = true ] && id -u oxidized &> /dev/null; then
     section "Creating Oxidized Systemd Service"
 
-    OXIDIZED_BIN=$(su - oxidized -c "command -v oxidized" 2>/dev/null || echo "/usr/local/bin/oxidized")
+    OXIDIZED_BIN=$(sudo -u oxidized -H bash -c "command -v oxidized" 2>/dev/null || echo "/usr/local/bin/oxidized")
 
     cat > /etc/systemd/system/oxidized.service << EOF
 [Unit]
@@ -412,8 +422,8 @@ fi
 
 info "Creating virtual environment..."
 if [ "$RUN_AS_OXIDIZED" = true ]; then
-    su - oxidized -c "python3 -m venv '$INSTALL_DIR/venv'"
-    su - oxidized -c "'$INSTALL_DIR/venv/bin/pip' install --upgrade pip setuptools wheel -q"
+    sudo -u oxidized -H bash -c "python3 -m venv '$INSTALL_DIR/venv'"
+    sudo -u oxidized -H bash -c "'$INSTALL_DIR/venv/bin/pip' install --upgrade pip setuptools wheel -q"
 else
     python3 -m venv "$INSTALL_DIR/venv"
     "$INSTALL_DIR/venv/bin/pip" install --upgrade pip setuptools wheel -q
@@ -422,9 +432,9 @@ fi
 info "Installing Python dependencies..."
 if [ "$RUN_AS_OXIDIZED" = true ]; then
     if [ -f "$INSTALL_DIR/requirements.txt" ]; then
-        su - oxidized -c "'$INSTALL_DIR/venv/bin/pip' install -q -r '$INSTALL_DIR/requirements.txt'"
+        sudo -u oxidized -H bash -c "'$INSTALL_DIR/venv/bin/pip' install -q -r '$INSTALL_DIR/requirements.txt'"
     else
-        su - oxidized -c "'$INSTALL_DIR/venv/bin/pip' install -q Flask==2.3.3 PyYAML==6.0.1 requests==2.31.0 gunicorn==21.2.0 Werkzeug==2.3.7"
+        sudo -u oxidized -H bash -c "'$INSTALL_DIR/venv/bin/pip' install -q Flask==2.3.3 PyYAML==6.0.1 requests==2.31.0 gunicorn==21.2.0 Werkzeug==2.3.7"
     fi
 else
     if [ -f "$INSTALL_DIR/requirements.txt" ]; then
@@ -464,7 +474,7 @@ PYEOF
 
 if [ "$RUN_AS_OXIDIZED" = true ]; then
     chown oxidized:oxidized "$INSTALL_DIR/init_app.py"
-    su - oxidized -c "cd '$INSTALL_DIR' && OXIDIZED_CONFIG_DIR='$CONFIG_DIR' APP_DB_PATH='/home/oxidized/.oxidized_manager/app.db' '$INSTALL_DIR/venv/bin/python3' init_app.py '$ADMIN_USERNAME' '$ADMIN_PASSWORD' '$ADMIN_EMAIL'"
+    sudo -u oxidized -H bash -c "cd '$INSTALL_DIR' && OXIDIZED_CONFIG_DIR='$CONFIG_DIR' APP_DB_PATH='/home/oxidized/.oxidized_manager/app.db' '$INSTALL_DIR/venv/bin/python3' init_app.py '$ADMIN_USERNAME' '$ADMIN_PASSWORD' '$ADMIN_EMAIL'"
 else
     (cd "$INSTALL_DIR" && OXIDIZED_CONFIG_DIR="$CONFIG_DIR" APP_DB_PATH="/home/oxidized/.oxidized_manager/app.db" "$INSTALL_DIR/venv/bin/python3" init_app.py "$ADMIN_USERNAME" "$ADMIN_PASSWORD" "$ADMIN_EMAIL")
 fi
