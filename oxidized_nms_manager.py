@@ -58,6 +58,235 @@ OXIDIZED_ROUTER_DB = CONFIG_DIR / 'router.db'
 OXIDIZED_BACKUPS = CONFIG_DIR / 'repositories.default'
 
 # ============================================================================
+# OXIDIZED SUPPORTED MODELS
+# (vendor, OS/product label, oxidized model identifier)
+# https://github.com/ytti/oxidized/blob/master/docs/Model-Notes.md
+# ============================================================================
+
+MODEL_CHOICES = [
+    ('-generic-', 'Cisco-like', 'defacto'),
+    ('6WIND', 'VSR', 'sixwind'),
+    ('A10 Networks', 'ACOS', 'acos'),
+    ('Accedian', 'AEN', 'aen'),
+    ('Acme Packet', 'ACMEPACKET', 'acmepacket'),
+    ('AddPack', 'AddPack', 'addpack'),
+    ('Adtran', 'Total Access (AOS)', 'adtran'),
+    ('ADVA', 'ADVA', 'adva'),
+    ('Alcatel-Lucent', 'AOS', 'aos'),
+    ('Alcatel-Lucent', 'AOS7', 'aos7'),
+    ('Alcatel-Lucent', 'ISAM', 'isam'),
+    ('Alcatel-Lucent', 'SR OS (Formerly TiMOS)', 'sros'),
+    ('Alcatel-Lucent', 'Wireless', 'aosw'),
+    ('Allied Telesis', 'Alliedware Plus', 'awplus'),
+    ('Allied Telesis', 'AT-8000S, AT-8000GS series', 'powerconnect'),
+    ('Alvarion', 'BreezeACCESS', 'alvarion'),
+    ('APC', 'AOS', 'apcaos'),
+    ('Arbor Networks', 'ArbOS', 'arbos'),
+    ('Arista', 'EOS', 'eos'),
+    ('Arris', 'C4CMTS', 'c4cmts'),
+    ('Aruba', 'AOS-CX', 'aoscx'),
+    ('Aruba', 'AOSW', 'aosw'),
+    ('Aruba', 'ArubaInstant', 'arubainstant'),
+    ('Asterfusion', 'AsterNOS', 'asternos'),
+    ('AudioCodes', 'AudioCodes', 'audiocodes'),
+    ('AudioCodes', 'MediaPack MP-1xx, Mediant1000', 'audiocodesmp'),
+    ('Avaya', 'VOSS', 'voss'),
+    ('Avaya', 'BOSS', 'boss'),
+    ('BDCOM', 'S2200/S2500/S2900 series', 'bdcom'),
+    ('Brocade', 'FabricOS', 'fabricos'),
+    ('Brocade', 'Enhanced Fabric OS', 'efos'),
+    ('Brocade', 'FastIron', 'fastiron'),
+    ('Brocade', 'IronWare', 'ironware'),
+    ('Brocade', 'NOS', 'nos'),
+    ('Brocade', 'Vyatta', 'vyatta'),
+    ('Brocade', '6910', 'br6910'),
+    ('Brocade', 'SLX-OS', 'slxos'),
+    ('Calix', 'AXOS', 'axos'),
+    ('Cambium', 'PMP450 Series', 'cambium'),
+    ('Cambium', 'ePMP Series', 'cambiumepmp'),
+    ('Casa', 'Casa', 'casa'),
+    ('Centec Networks', 'CNOS', 'cnos'),
+    ('Check Point', 'GaiaOS', 'gaiaos'),
+    ('Ciena', 'SAOS', 'saos'),
+    ('Ciena', 'SAOS10', 'saos10'),
+    ('Cisco', 'ACSW', 'acsw'),
+    ('Cisco', 'AireOS', 'aireos'),
+    ('Cisco', 'ASA', 'asa'),
+    ('Cisco', 'AsyncOS', 'asyncos'),
+    ('Cisco', 'CatOS', 'catos'),
+    ('Cisco', 'Catalyst Express', 'ciscoce'),
+    ('Cisco', 'ExaLink Fusion (Nexus 3550-F)', 'exalink'),
+    ('Cisco', 'FireLinuxOS', 'firelinuxos'),
+    ('Cisco', 'IOS', 'ios'),
+    ('Cisco', 'IOSXR', 'iosxr'),
+    ('Cisco', 'NGA', 'cisconga'),
+    ('Cisco', 'NXOS', 'nxos'),
+    ('Cisco', 'SMA', 'ciscosma'),
+    ('Cisco', 'SMB (Nikola series)', 'ciscosmb'),
+    ('Cisco', 'UCS', 'ucs'),
+    ('Cisco', 'Viptela', 'viptela'),
+    ('Cisco', 'VPN3000', 'ciscovpn3k'),
+    ('Citrix', 'NetScaler (Virtual Appliance)', 'netscaler'),
+    ('Coriant (former Tellabs)', 'TMOS (8800)', 'corianttmos'),
+    ('Coriant (former Tellabs)', '8600', 'coriant8600'),
+    ('Coriant (former Tellabs)', 'Groove', 'coriantgroove'),
+    ('ComNet', 'Microsemi Switch', 'comnetms'),
+    ('Comtrol', 'RocketLinx', 'comtrol'),
+    ('Cumulus', 'Linux', 'cumulus'),
+    ('DataCom', 'DmSwitch 3000', 'datacom'),
+    ('DCN', 'DCN', 'ios'),
+    ('DELL', 'PowerConnect', 'powerconnect'),
+    ('DELL', 'AOSW', 'aosw'),
+    ('DELL', 'DellX', 'dellx'),
+    ('DELL', 'EMC Networking OS6', 'os6'),
+    ('DELL', 'EMC Networking OS10', 'os10'),
+    ('D-Link', 'D-Link', 'dlink'),
+    ('D-Link', 'D-Link Cisco-like CLI', 'dlinknextgen'),
+    ('Eaton', 'Gigabit Network Card', 'eatonnetwork'),
+    ('ECI Telecom', 'ECIapollo', 'eciapollo'),
+    ('EdgeCore', 'ECS3510, ES3526XA-V2, ES3528M', 'edgecos'),
+    ('Eltex', 'Eltex', 'eltex'),
+    ('Ericsson/Redback', 'IPOS (former SEOS)', 'ipos'),
+    ('Ericsson/Redback', 'Minilink 6600', 'ml66'),
+    ('Extreme Networks', 'Enterasys B/C-Series', 'enterasys'),
+    ('Extreme Networks', 'Enterasys 800-Series', 'enterasys800'),
+    ('Extreme Networks', 'WM', 'mtrlrfs'),
+    ('Extreme Networks', 'XOS, ExtremeWare', 'xos'),
+    ('F5', 'F5OS', 'tmos'),
+    ('F5', 'TMOS', 'tmos'),
+    ('Fiberstore (fs.com)', 'S3400', 'fsos'),
+    ('Fiberstore (fs.com)', 'S3800', 'gcombnps'),
+    ('Fiberstore (fs.com)', 'S3900', 'edgecos'),
+    ('Fiberstore (fs.com)', 'S3900-R', 'bdcom'),
+    ('Fiberstore (fs.com)', 'S5800, S5850', 'cnos'),
+    ('Firebrick', 'FBxxxx', 'firebrick'),
+    ('Force10', 'DNOS', 'dnos'),
+    ('Force10', 'FTOS', 'ftos'),
+    ('Fortinet', 'FortiGate', 'fortigate'),
+    ('Fortinet', 'FortiOS', 'fortios'),
+    ('Fortinet', 'FortiWLC', 'fortiwlc'),
+    ('Fujitsu', 'PRIMERGY Blade switch 1/10Gbe', 'fujitsupy'),
+    ('Fujitsu', '1FINITY Switches', 'onefinity'),
+    ('Garderos', 'GRS', 'garderos'),
+    ('GCOM Technologies', 'Broadband Network Platform Software', 'gcombnps'),
+    ('Grandstream Networks', 'GSX', 'grandstream'),
+    ('Grandstream Networks', 'HT8xx', 'grandstream'),
+    ('Hatteras', 'Hatteras', 'hatteras'),
+    ('Hillstone Networks', 'StoneOS', 'stoneos'),
+    ('Hirschmann', 'Classic', 'hirschmann'),
+    ('Hirschmann', 'HiOS', 'hios'),
+    ('HP', 'Comware (HP A-series, H3C, 3Com)', 'comware'),
+    ('HP', 'Procurve', 'procurve'),
+    ('HP', 'BladeSystem (Onboard Administrator)', 'hpebladesystem'),
+    ('HP', 'MSA', 'hpemsa'),
+    ('HP', 'MSM (Wireless Controller)', 'hpmsm'),
+    ('HP', 'H3C S6520X', 'h3c'),
+    ('Huawei', 'VRP', 'vrp'),
+    ('Huawei', 'SmartAX series', 'smartax'),
+    ('Icotera', '6400 series', 'icotera'),
+    ('Ingate', 'SIParator/Firewalls', 'ingate'),
+    ('IP Infusion', 'OcNOS', 'ocnos'),
+    ('Ivanti', 'Ivanti Connect Secure (ICS)', 'ivanti'),
+    ('Juniper', 'JunOS', 'junos'),
+    ('Juniper', 'ScreenOS (Netscreen)', 'screenos'),
+    ('LANCOM Systems', 'LCOS', 'lancom'),
+    ('Lenovo', 'Lenovo Network OS', 'lenovonos'),
+    ('Linksys', 'SRW', 'linksyssrw'),
+    ('Linuxgeneric', 'CentOS', 'linuxgeneric'),
+    ('Mellanox', 'MLNX-OS', 'mlnxos'),
+    ('Mellanox', 'Voltaire', 'voltaire'),
+    ('Mikrotik', 'RouterOS', 'routeros'),
+    ('Mikrotik', 'SwOS and SwOS Lite', 'swos'),
+    ('Mimosa', 'Mimosa (B11)', 'mimosab11'),
+    ('Motorola', 'RFS', 'mtrlrfs'),
+    ('MRV', 'MasterOS', 'masteros'),
+    ('MRV', 'FiberDriver', 'fiberdriver'),
+    ('NEC', 'NEC IX', 'necix'),
+    ('Netgate', 'TNSR', 'tnsr'),
+    ('Netgear', 'Netgear switches', 'netgear'),
+    ('Netonix', 'WISP Switch', 'netonix'),
+    ('Nokia (formerly Alcatel-Lucent)', 'SR OS (TiMOS)', 'sros'),
+    ('Nokia (formerly Alcatel-Lucent)', 'SR OS Model-Driven CLI (7705/7210/7450/7750/7950/NSP)', 'srosmd'),
+    ('OneAccess', 'OneOS', 'oneos'),
+    ('OneAccess', 'TDRE', 'tdre'),
+    ('OpenBSD', 'OpenBSD', 'openbsd'),
+    ('Opengear', 'Opengear', 'opengear'),
+    ('OpenWRT', 'OpenWRT', 'openwrt'),
+    ('OPNsense', 'OPNsense', 'opnsense'),
+    ('Palo Alto', 'PanOS API', 'panos_api'),
+    ('Palo Alto', 'PanOS', 'panos'),
+    ('Perle', 'IOLAN Console Servers', 'perle'),
+    ('PLANET', 'SG/SGS Switches', 'planet'),
+    ('pfSense', 'pfSense', 'pfsense'),
+    ('Pure Storage', 'PurityOS', 'purityos'),
+    ('Radware', 'AlteonOS', 'alteonos'),
+    ('Raisecom', 'Raisecom', 'raisecom'),
+    ('Riverbed', 'SteelHead', 'riverbed'),
+    ('Ruijie Networks', 'RGOS', 'rgos'),
+    ('QTECH', 'QSW-2800/3400/3450/3500', 'qtech'),
+    ('Quanta', 'Quanta / VxWorks 6.6', 'quantaos'),
+    ('Siklu', 'EtherHaul', 'siklu'),
+    ('Siklu', 'Multihaul TG', 'siklumhtg'),
+    ('Seiko Solutions', 'SmartCS, SmartCS mini', 'smartcs'),
+    ('SmartByte', 'LT-S8228G series', 'smartbyte'),
+    ('SonicWALL', 'SonicOS', 'sonicos'),
+    ('SONiC', 'Enterprise SONiC', 'enterprise_sonic'),
+    ('SNR', 'SNR-S300G, S2xxx, S3xxx, S4xxx', 'dcnos'),
+    ('Speedtouch', 'Thomson Speedtouch', 'speedtouch'),
+    ('Supermicro', 'SSE-G2252, G2252P', 'edgecos'),
+    ('Supermicro', 'SSE-G48-TG4, G24-TG4', 'aricentiss'),
+    ('Supermicro', 'SSE-X24S, X24SR, X3348S/SR/T/TR', 'aricentiss'),
+    ('Supermicro', 'SBM-GEM-X2C, GEM-X2C+, GEM-X3S+, XEM-X10SM', 'aricentiss'),
+    ('Symantec', 'Blue Coat ProxySG / SGOS', 'sgos'),
+    ('Telco Systems', 'T-Marc 3306', 'telco'),
+    ('Trango Systems', 'Trango', 'trango'),
+    ('TrueNAS', 'TrueNAS', 'truenas'),
+    ('TPLink', 'TPLink', 'tplink'),
+    ('TPLink', 'DeltaStream GPON OLT', 'tplink'),
+    ('TPLink', 'TL-SL5428', 'edgecos'),
+    ('TPLink', 'TL-SL3428', 'powerconnect'),
+    ('Ubiquiti', 'AirOS', 'airos'),
+    ('Ubiquiti', 'Edgeos', 'edgeos'),
+    ('Ubiquiti', 'EdgeSwitch', 'edgeswitch'),
+    ('Ubiquiti', 'AirFiber', 'airfiber'),
+    ('Ubiquiti', 'UnifiAP', 'unifiap'),
+    ('Uplink', 'EP4440-DP', 'EP4440'),
+    ('VMWare', 'NSX Edge (configuration)', 'nsxconfig'),
+    ('VMWare', 'NSX Edge (firewall rules)', 'nsxfirewall'),
+    ('VMWare', 'NSX Distributed Firewall', 'nsxdfw'),
+    ('VSOL', 'GPON OLT', 'vsololt'),
+    ('VYOS Networks', 'VYOS', 'vyos'),
+    ('Watchguard', 'Fireware OS', 'firewareos'),
+    ('Waystream (PacketFront)', 'iBOS', 'ibos'),
+    ('Westell', 'Westell 8178G, Westell 8266G', 'weos'),
+    ('Yadro', 'KornfeldOS', 'kornfeldos'),
+    ('YAMAHA', 'NVR/RTX Series', 'yamaha'),
+    ('Zhone', 'Zhone (OLT and MX)', 'zhoneolt'),
+    ('ZPE', 'Nodegrid OS', 'nodegrid'),
+    ('ZTE', 'C300&C320 OLT', 'zteolt'),
+    ('Zyxel', 'ZyNOS', 'zynos'),
+    ('Zyxel', 'ZyNOS GS-series variant', 'zynosgs'),
+    ('Zyxel', 'ZyNOS ADSL', 'zynosadsl'),
+    ('Zyxel', 'ZyNOS CLI (DSLAMs)', 'zynoscli'),
+    ('Zyxel', 'ZyNOS MGS series', 'zynosmgs'),
+    ('Zyxel', 'NDMS', 'ndms'),
+    ('Zyxel', '1308', 'zy1308'),
+]
+
+def get_model_groups():
+    """MODEL_CHOICES grouped by vendor, preserving order, for a grouped <select>."""
+    groups = []
+    current_vendor = None
+    current_options = None
+    for vendor, os_label, model in MODEL_CHOICES:
+        if vendor != current_vendor:
+            current_vendor = vendor
+            current_options = []
+            groups.append((vendor, current_options))
+        current_options.append((os_label, model))
+    return groups
+
+# ============================================================================
 # DATABASE & INITIALIZATION
 # ============================================================================
 
@@ -988,7 +1217,8 @@ def manage_devices():
     groups = [dict(row)['name'] for row in c.fetchall()]
     conn.close()
     
-    return render_template_string(DEVICE_MANAGEMENT_TEMPLATE, devices=devices, groups=groups)
+    return render_template_string(DEVICE_MANAGEMENT_TEMPLATE, devices=devices, groups=groups,
+                                  model_groups=get_model_groups())
 
 @app.route('/config', methods=['GET', 'POST'])
 @requires_auth
@@ -1916,7 +2146,16 @@ DEVICE_MANAGEMENT_TEMPLATE = '''<!DOCTYPE html>
                     </div>
                     <div class="field">
                         <label>Model</label>
-                        <input type="text" name="model" id="field-model" placeholder="RouterOS, Cisco IOS, JunOS">
+                        <select name="model" id="field-model">
+                            <option value="">-- Select Model --</option>
+                            {% for vendor, options in model_groups %}
+                            <optgroup label="{{ vendor }}">
+                                {% for os_label, model in options %}
+                                <option value="{{ model }}">{{ os_label }} ({{ model }})</option>
+                                {% endfor %}
+                            </optgroup>
+                            {% endfor %}
+                        </select>
                     </div>
                     <div class="field">
                         <label>SSH Username</label>
