@@ -371,14 +371,29 @@ section "Setting Up Admin Page"
 mkdir -p "$INSTALL_DIR"
 mkdir -p /home/oxidized/.oxidized_manager
 
-if [ -f "oxidized_nms_manager.py" ]; then
-    cp oxidized_nms_manager.py "$INSTALL_DIR/"
-else
-    error "oxidized_nms_manager.py not found in current directory"
+REPO_URL="https://github.com/Kintoyyy/oxidized-admin.git"
+APP_SRC_DIR="$(pwd)"
+CLONE_DIR=""
+
+if [ ! -f "$APP_SRC_DIR/oxidized_nms_manager.py" ]; then
+    warn "oxidized_nms_manager.py not found in current directory, cloning $REPO_URL..."
+    CLONE_DIR=$(mktemp -d /tmp/oxidized-admin.XXXXXX)
+    git clone --depth 1 "$REPO_URL" "$CLONE_DIR"
+    APP_SRC_DIR="$CLONE_DIR"
 fi
 
-if [ -f "requirements.txt" ]; then
-    cp requirements.txt "$INSTALL_DIR/"
+if [ ! -f "$APP_SRC_DIR/oxidized_nms_manager.py" ]; then
+    error "oxidized_nms_manager.py not found, even after cloning $REPO_URL"
+fi
+
+cp "$APP_SRC_DIR/oxidized_nms_manager.py" "$INSTALL_DIR/"
+
+if [ -f "$APP_SRC_DIR/requirements.txt" ]; then
+    cp "$APP_SRC_DIR/requirements.txt" "$INSTALL_DIR/"
+fi
+
+if [ -n "$CLONE_DIR" ]; then
+    rm -rf "$CLONE_DIR"
 fi
 
 if id -u oxidized &> /dev/null; then

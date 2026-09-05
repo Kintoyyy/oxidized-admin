@@ -30,12 +30,19 @@ chmod +x install_oxidized_manager.sh
 sudo ./install_oxidized_manager.sh
 ```
 
+Or, without cloning first — the script fetches the app source itself if it isn't already in the current directory:
+
+```bash
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/Kintoyyy/oxidized-admin/refs/heads/main/install_oxidized_manager.sh)"
+```
+
 You'll be prompted for the admin page install directory, Oxidized config directory, port, and admin username/password/email. The script then:
 
 1. Detects any existing Oxidized install — you can **skip** it (leave as-is), **nuke** it (reinstall the gems fresh, keeping existing backups/config), or cancel.
 2. If installing, creates the `oxidized` system user, grants it passwordless sudo, installs build dependencies, and installs the `oxidized`/`oxidized-web`/`oxidized-script` gems.
-3. Sets up an `oxidized.service` systemd unit running as that user.
-4. Installs the Flask admin page (also running as the `oxidized` user), initializes its database, and sets up the `oxidized-manager.service` systemd unit.
+3. Sets up an `oxidized.service` systemd unit running as that user (web GUI/API on port 8888).
+4. Optionally puts an Nginx reverse proxy with basic-auth password protection in front of the Oxidized web GUI (see [Securing the Oxidized Web GUI](#securing-the-oxidized-web-gui)).
+5. Installs the Flask admin page (also running as the `oxidized` user), initializes its database, and sets up the `oxidized-manager.service` systemd unit.
 
 Open `http://localhost:5000` and log in with the admin credentials you set.
 
@@ -98,6 +105,46 @@ sudo journalctl -u oxidized -f
 - Use a strong admin password and restrict the firewall to known IPs
 - Rotate LibreNMS/GitHub tokens periodically — never commit them to git
 
+### Securing the Oxidized Web GUI
+
+Oxidized's own web GUI/API (port 8888) has no authentication by default. The installer can front it with an Nginx reverse proxy + basic auth — say yes when prompted, or set it up manually afterwards:
+
+```bash
+sudo apt install nginx apache2-utils -y
+sudo htpasswd -c /etc/nginx/.htpasswd oxidized   # -c only on the first user
+
+sudo tee /etc/nginx/sites-available/oxidized > /dev/null << 'EOF'
+server {
+    listen 80;
+    server_name _;
+
+    location / {
+        auth_basic "Oxidized Access";
+        auth_basic_user_file /etc/nginx/.htpasswd;
+
+        proxy_pass http://localhost:8888;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+EOF
+
+sudo ln -sf /etc/nginx/sites-available/oxidized /etc/nginx/sites-enabled/oxidized
+sudo rm -f /etc/nginx/sites-enabled/default
+sudo nginx -t && sudo systemctl restart nginx && sudo systemctl enable nginx
+```
+
+Then restrict Oxidized to localhost so it's only reachable through the proxy:
+
+```bash
+sudo sed -i 's/^rest:.*/rest: localhost:8888/' /home/oxidized/.config/oxidized/config
+sudo systemctl restart oxidized.service
+```
+
+Access it at `http://<host>/` — you'll be prompted for the username/password you set with `htpasswd`.
+
 ## Troubleshooting
 
 **Service won't start**
@@ -110,7 +157,7 @@ sudo lsof -i :5000              # port already in use?
 ```bash
 sudo systemctl status oxidized
 sudo journalctl -u oxidized -n 50
-curl http://localhost:8080/api/nodes
+curl http://localhost:8888/api/nodes
 ```
 
 **LibreNMS sync failing**
@@ -136,6 +183,10 @@ sudo systemctl disable oxidized-manager oxidized
 sudo rm /etc/systemd/system/oxidized-manager.service /etc/systemd/system/oxidized.service
 sudo rm /etc/sudoers.d/oxidized
 sudo systemctl daemon-reload
+
+# If you set up the Nginx proxy:
+sudo rm -f /etc/nginx/sites-enabled/oxidized /etc/nginx/sites-available/oxidized /etc/nginx/.htpasswd
+sudo systemctl restart nginx
 
 # Also deletes all device backups/config and the oxidized user's data:
 sudo deluser --remove-home oxidized
