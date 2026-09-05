@@ -219,34 +219,74 @@ if [ -f "$CONFIG_DIR/config" ] && [ "$NUKE_OXIDIZED" = true ]; then
 fi
 
 if [ ! -f "$CONFIG_DIR/config" ]; then
-    info "Creating minimal Oxidized config..."
+    info "Creating Oxidized config..."
     cat > "$CONFIG_DIR/config" << EOF
 ---
 username: admin
 password: password
+log: $CONFIG_DIR/logs
+rest: 0.0.0.0:8888
+resolve_dns: false
 interval: 3600
 use_syslog: false
-log: $CONFIG_DIR/logs
-
-source:
-  default: csv
-
-csv:
-  file: $CONFIG_DIR/router.db
-  delimiter: ":"
-
-output:
-  default: git
-
-git:
-  repo: $CONFIG_DIR/repositories.default/.git
-
+debug: false
+run_once: false
+threads: 30
+use_max_threads: false
+timeout: 20
+timelimit: 300
+retries: 3
+prompt: !ruby/regexp /^([\w.@-]+[#>]\s?)\$/
+next_adds_job: false
+vars: {}
 groups:
   default:
     username: admin
     password: password
-
-rest: 0.0.0.0:8888
+group_map: {}
+models: {}
+pid: "$CONFIG_DIR/pid"
+extensions:
+  oxidized-web:
+    load: true
+    host: 0.0.0.0
+    port: 8888
+crash:
+  directory: "$CONFIG_DIR/crashes"
+  hostnames: false
+stats:
+  history_size: 10
+input:
+  default: ssh
+  debug: false
+  ssh:
+    secure: false
+  ftp:
+    passive: true
+  utf8_encoded: true
+output:
+  default: git
+  git:
+    single_repo: true
+    user: Oxidized
+    email: oxidized@localhost
+    repo: $CONFIG_DIR/repositories.default/.git
+source:
+  default: csv
+  csv:
+    file: $CONFIG_DIR/router.db
+    delimiter: ":"
+    map:
+      name: 0
+      ip: 1
+      model: 2
+      username: 3
+      password: 4
+      group: 5
+model_map:
+  juniper: junos
+  cisco: ios
+  mikrotik: routeros
 EOF
     info "Created $CONFIG_DIR/config"
 else
@@ -371,6 +411,11 @@ EOF
         sed -i 's/^rest:.*/rest: localhost:8888/' "$CONFIG_DIR/config"
     else
         echo 'rest: localhost:8888' >> "$CONFIG_DIR/config"
+    fi
+    if grep -qE '^\s*host:\s*0\.0\.0\.0\s*$' "$CONFIG_DIR/config"; then
+        sed -i -E 's/^(\s*host:\s*)0\.0\.0\.0\s*$/\1localhost/' "$CONFIG_DIR/config"
+    else
+        warn "Could not find the oxidized-web extension's 'host' setting to restrict automatically; edit $CONFIG_DIR/config manually if needed."
     fi
     systemctl restart oxidized.service
     info "✓ Oxidized now only reachable via the Nginx proxy (http://<host>/, user: $PROXY_USER)"

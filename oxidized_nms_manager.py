@@ -301,10 +301,14 @@ github_client = GitHubBackupClient()
 
 OXIDIZED_API_URL = 'http://localhost:8888/api'
 
+def get_oxidized_api_url():
+    """Oxidized API base URL, as configured in Settings (falls back to the default)."""
+    return get_setting('oxidized_api_url', OXIDIZED_API_URL)
+
 def get_oxidized_nodes():
     """Fetch device list from Oxidized REST API."""
     try:
-        response = requests.get(f'{OXIDIZED_API_URL}/nodes', timeout=5)
+        response = requests.get(f'{get_oxidized_api_url()}/nodes', timeout=5)
         response.raise_for_status()
         return response.json().get('nodes', [])
     except Exception as e:
@@ -314,7 +318,7 @@ def get_oxidized_nodes():
 def get_oxidized_node_config(node_name):
     """Fetch device config from Oxidized."""
     try:
-        response = requests.get(f'{OXIDIZED_API_URL}/node/{node_name}/config', timeout=5)
+        response = requests.get(f'{get_oxidized_api_url()}/node/{node_name}/config', timeout=5)
         response.raise_for_status()
         return response.text
     except Exception as e:
@@ -324,7 +328,7 @@ def get_oxidized_node_config(node_name):
 def get_oxidized_node_history(node_name):
     """Fetch device backup history from Oxidized."""
     try:
-        response = requests.get(f'{OXIDIZED_API_URL}/node/{node_name}/log', timeout=5)
+        response = requests.get(f'{get_oxidized_api_url()}/node/{node_name}/log', timeout=5)
         response.raise_for_status()
         return response.json()
     except Exception as e:
@@ -556,7 +560,7 @@ def requires_admin(f):
 def check_oxidized_installed():
     """Check if Oxidized is installed and running."""
     try:
-        response = requests.get(f'{OXIDIZED_API_URL}/nodes', timeout=2)
+        response = requests.get(f'{get_oxidized_api_url()}/nodes', timeout=2)
         return response.status_code == 200
     except:
         return False
@@ -901,6 +905,26 @@ def manage_config():
     
     config_yaml = yaml.dump(config, default_flow_style=False)
     return render_template_string(CONFIG_MANAGEMENT_TEMPLATE, config=config, config_yaml=config_yaml)
+
+@app.route('/api/oxidized/restart', methods=['POST'])
+@requires_auth
+@requires_admin
+def api_oxidized_restart():
+    """Restart the Oxidized systemd service."""
+    try:
+        result = subprocess.run(
+            ['sudo', 'systemctl', 'restart', 'oxidized'],
+            capture_output=True, text=True, timeout=30
+        )
+        if result.returncode == 0:
+            log_audit('oxidized_restart', 'oxidized')
+            return jsonify({'status': 'success', 'message': 'Oxidized service restarted'})
+        log_audit('oxidized_restart_failed', 'oxidized', details=result.stderr.strip())
+        return jsonify({'status': 'error', 'message': result.stderr.strip() or 'Failed to restart Oxidized'}), 500
+    except subprocess.TimeoutExpired:
+        return jsonify({'status': 'error', 'message': 'Restart timed out'}), 500
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
 
 @app.route('/settings', methods=['GET', 'POST'])
 @requires_auth
@@ -2058,6 +2082,22 @@ SETTINGS_TEMPLATE = '''<!DOCTYPE html>
             margin-bottom: 1rem;
             color: #e2e8f0;
         }
+        .btn-secondary {
+            background: #1e293b;
+            border: 1px solid #334155;
+            color: #cbd5e1;
+            padding: 10px 16px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        .btn-secondary:hover {
+            background: #334155;
+        }
+        .btn-secondary:disabled {
+            opacity: 0.6;
+            cursor: default;
+        }
     </style>
 </head>
 <body>
@@ -2065,14 +2105,19 @@ SETTINGS_TEMPLATE = '''<!DOCTYPE html>
         <h2>Settings</h2>
         <a href="{{ url_for('dashboard') }}">← Back</a>
     </div>
-    
+
     <div class="container">
         {% if oxidized_status %}
         <div class="status status-success">✓ Oxidized API is running and reachable</div>
         {% else %}
         <div class="status status-error">✗ Oxidized API is not reachable. Please check your installation.</div>
         {% endif %}
-        
+
+        <div style="margin-bottom: 1.5rem; display: flex; align-items: center; gap: 1rem;">
+            <button type="button" class="btn-secondary" id="restart-oxidized-btn" onclick="restartOxidized()">Restart Oxidized Service</button>
+            <span id="restart-oxidized-result" style="font-size: 13px;"></span>
+        </div>
+
         <form method="POST">
             <div class="section">
                 <h2>Application Settings</h2>
@@ -2134,6 +2179,35 @@ SETTINGS_TEMPLATE = '''<!DOCTYPE html>
             <button type="submit" class="btn">Save Settings</button>
         </form>
     </div>
+
+    <script>
+    function restartOxidized() {
+        var btn = document.getElementById('restart-oxidized-btn');
+        var result = document.getElementById('restart-oxidized-result');
+        btn.disabled = true;
+        result.style.color = '#cbd5e1';
+        result.textContent = '⏳ Restarting...';
+
+        fetch('{{ url_for("api_oxidized_restart") }}', { method: 'POST' })
+            .then(response => response.json().then(data => ({ ok: response.ok, data: data })))
+            .then(({ ok, data }) => {
+                if (ok && data.status === 'success') {
+                    result.style.color = '#10b981';
+                    result.textContent = '✓ ' + data.message + ' - reloading...';
+                    setTimeout(() => location.reload(), 2000);
+                } else {
+                    result.style.color = '#f87171';
+                    result.textContent = '✗ ' + data.message;
+                    btn.disabled = false;
+                }
+            })
+            .catch(err => {
+                result.style.color = '#f87171';
+                result.textContent = '✗ ' + err;
+                btn.disabled = false;
+            });
+    }
+    </script>
 </body>
 </html>'''
 
