@@ -434,29 +434,28 @@ mkdir -p "$INSTALL_DIR"
 mkdir -p /home/oxidized/.oxidized_manager
 
 REPO_URL="https://github.com/Kintoyyy/oxidized-admin.git"
-APP_SRC_DIR="$(pwd)"
-CLONE_DIR=""
+CLONE_DIR=$(mktemp -d /tmp/oxidized-admin.XXXXXX)
 
-if [ ! -f "$APP_SRC_DIR/oxidized_nms_manager.py" ]; then
-    warn "oxidized_nms_manager.py not found in current directory, cloning $REPO_URL..."
-    CLONE_DIR=$(mktemp -d /tmp/oxidized-admin.XXXXXX)
-    git clone --depth 1 "$REPO_URL" "$CLONE_DIR"
-    APP_SRC_DIR="$CLONE_DIR"
-fi
+info "Pulling latest admin page source from $REPO_URL..."
+git clone --depth 1 "$REPO_URL" "$CLONE_DIR"
 
-if [ ! -f "$APP_SRC_DIR/oxidized_nms_manager.py" ]; then
-    error "oxidized_nms_manager.py not found, even after cloning $REPO_URL"
-fi
-
-cp "$APP_SRC_DIR/oxidized_nms_manager.py" "$INSTALL_DIR/"
-
-if [ -f "$APP_SRC_DIR/requirements.txt" ]; then
-    cp "$APP_SRC_DIR/requirements.txt" "$INSTALL_DIR/"
-fi
-
-if [ -n "$CLONE_DIR" ]; then
+if [ ! -f "$CLONE_DIR/oxidized_nms_manager.py" ]; then
     rm -rf "$CLONE_DIR"
+    error "oxidized_nms_manager.py not found after cloning $REPO_URL"
 fi
+
+info "Replacing admin page files in $INSTALL_DIR..."
+cp -f "$CLONE_DIR/oxidized_nms_manager.py" "$INSTALL_DIR/"
+
+if [ -f "$CLONE_DIR/requirements.txt" ]; then
+    cp -f "$CLONE_DIR/requirements.txt" "$INSTALL_DIR/"
+fi
+
+if compgen -G "$CLONE_DIR/*.html" > /dev/null; then
+    cp -f "$CLONE_DIR"/*.html "$INSTALL_DIR/"
+fi
+
+rm -rf "$CLONE_DIR"
 
 if id -u oxidized &> /dev/null; then
     chown -R oxidized:oxidized "$INSTALL_DIR" /home/oxidized/.oxidized_manager

@@ -30,7 +30,7 @@ chmod +x install_oxidized_manager.sh
 sudo ./install_oxidized_manager.sh
 ```
 
-Or, without cloning first — the script fetches the app source itself if it isn't already in the current directory:
+Or, without cloning first:
 
 ```bash
 sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/Kintoyyy/oxidized-admin/refs/heads/main/install_oxidized_manager.sh)"
@@ -42,7 +42,9 @@ You'll be prompted for the admin page install directory, Oxidized config directo
 2. If installing, creates the `oxidized` system user, grants it passwordless sudo, installs build dependencies, and installs the `oxidized`/`oxidized-web`/`oxidized-script` gems.
 3. Sets up an `oxidized.service` systemd unit running as that user (web GUI/API on port 8888).
 4. Optionally puts an Nginx reverse proxy with basic-auth password protection in front of the Oxidized web GUI (see [Securing the Oxidized Web GUI](#securing-the-oxidized-web-gui)).
-5. Installs the Flask admin page (also running as the `oxidized` user), initializes its database, and sets up the `oxidized-manager.service` systemd unit.
+5. Always does a fresh `git clone` of this repo and overwrites the admin page files (`oxidized_nms_manager.py`, `requirements.txt`, any `.html` templates) in the install directory, initializes the database, and sets up the `oxidized-manager.service` systemd unit.
+
+That last step means **re-running the installer is also how you update the admin page** — it always pulls the latest code from git and replaces what's deployed, regardless of local edits. The Oxidized config file itself is left alone unless you choose "Nuke".
 
 Open `http://localhost:5000` and log in with the admin credentials you set.
 
