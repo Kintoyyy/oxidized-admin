@@ -1185,6 +1185,170 @@ def librenms_alerts():
 # HTML TEMPLATES
 # ============================================================================
 
+# Shared shadcn-inspired design tokens + components, reused by every page.
+BASE_CSS = '''
+:root {
+    --background: #09090b;
+    --foreground: #fafafa;
+    --card: #18181b;
+    --border: #27272a;
+    --input: #27272a;
+    --ring: #60a5fa;
+    --muted: #27272a;
+    --muted-foreground: #a1a1aa;
+    --primary: #fafafa;
+    --primary-foreground: #18181b;
+    --accent: #27272a;
+    --destructive: #ef4444;
+    --radius: 8px;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, sans-serif;
+    background: var(--background);
+    color: var(--foreground);
+    font-size: 14px;
+    line-height: 1.5;
+}
+a { color: inherit; text-decoration: none; }
+h1 { font-size: 20px; font-weight: 600; margin-bottom: 1.25rem; }
+code, pre { font-family: ui-monospace, "SF Mono", Consolas, monospace; }
+
+.topbar {
+    position: sticky; top: 0; z-index: 20;
+    display: flex; align-items: center; justify-content: space-between;
+    height: 52px; padding: 0 1.25rem;
+    background: rgba(9, 9, 11, 0.92);
+    backdrop-filter: blur(8px);
+    border-bottom: 1px solid var(--border);
+}
+.topbar .brand { font-weight: 600; font-size: 14px; display: flex; align-items: center; gap: 6px; }
+.topbar nav { display: flex; align-items: center; gap: 2px; }
+.topbar nav a {
+    padding: 6px 10px; border-radius: var(--radius);
+    font-size: 13px; color: var(--muted-foreground);
+    transition: background .15s, color .15s;
+}
+.topbar nav a:hover { background: var(--accent); color: var(--foreground); }
+.topbar nav a.active { background: var(--accent); color: var(--foreground); }
+.topbar .right { display: flex; align-items: center; gap: 0.5rem; }
+
+.page { max-width: 1280px; margin: 0 auto; padding: 1.5rem; }
+.page-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 1.25rem; }
+.page-header h1 { margin-bottom: 0; }
+
+.btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+    height: 32px; padding: 0 12px; border-radius: var(--radius);
+    font-size: 13px; font-weight: 500; cursor: pointer;
+    border: 1px solid transparent; background: var(--primary); color: var(--primary-foreground);
+    transition: opacity .15s, background .15s; white-space: nowrap;
+}
+.btn:hover { opacity: .88; }
+.btn:disabled { opacity: .5; cursor: default; }
+.btn-outline { background: transparent; border-color: var(--border); color: var(--foreground); }
+.btn-outline:hover { background: var(--accent); opacity: 1; }
+.btn-ghost { background: transparent; color: var(--muted-foreground); }
+.btn-ghost:hover { background: var(--accent); color: var(--foreground); opacity: 1; }
+.btn-destructive { background: var(--destructive); color: #fff; }
+.btn-sm { height: 28px; padding: 0 10px; font-size: 12px; }
+
+.input, select, textarea, input[type], input:not([type]) {
+    width: 100%; height: 32px; padding: 0 10px; border-radius: var(--radius);
+    background: var(--background); border: 1px solid var(--input); color: var(--foreground);
+    font-size: 13px;
+}
+textarea { height: auto; padding: 8px 10px; font-family: ui-monospace, monospace; }
+input:focus, select:focus, textarea:focus {
+    outline: none; border-color: var(--ring); box-shadow: 0 0 0 2px rgba(96, 165, 250, .25);
+}
+label { display: block; font-size: 12px; font-weight: 500; color: var(--muted-foreground); margin-bottom: 4px; }
+.field { margin-bottom: 0.85rem; }
+.help-text { color: var(--muted-foreground); font-size: 12px; margin-top: 4px; }
+
+.card { background: var(--card); border: 1px solid var(--border); border-radius: calc(var(--radius) + 2px); }
+.card-header { padding: 1rem 1.25rem; border-bottom: 1px solid var(--border); }
+.card-title { font-size: 14px; font-weight: 600; }
+.card-content { padding: 1.25rem; }
+
+table.table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.card table.table { border: none; }
+table.table th {
+    text-align: left; padding: 8px 12px; font-size: 11px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: .03em; color: var(--muted-foreground);
+    border-bottom: 1px solid var(--border);
+}
+table.table td { padding: 10px 12px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+table.table tbody tr:last-child td { border-bottom: none; }
+table.table tbody tr:hover td { background: var(--accent); }
+.table-wrap { background: var(--card); border: 1px solid var(--border); border-radius: calc(var(--radius) + 2px); overflow: hidden; overflow-x: auto; }
+.table-wrap table.table { border: none; }
+
+.badge {
+    display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 9999px;
+    font-size: 11px; font-weight: 500; border: 1px solid var(--border); color: var(--muted-foreground);
+    text-transform: capitalize;
+}
+.badge-success { color: #4ade80; border-color: rgba(34, 197, 94, .3); background: rgba(34, 197, 94, .1); }
+.badge-destructive { color: #f87171; border-color: rgba(239, 68, 68, .3); background: rgba(239, 68, 68, .1); }
+.badge-warning { color: #fbbf24; border-color: rgba(234, 179, 8, .3); background: rgba(234, 179, 8, .1); }
+
+.alert { padding: 10px 14px; border-radius: var(--radius); font-size: 13px; border: 1px solid var(--border); margin-bottom: 1rem; }
+.alert-success { color: #4ade80; border-color: rgba(34, 197, 94, .3); background: rgba(34, 197, 94, .08); }
+.alert-danger { color: #f87171; border-color: rgba(239, 68, 68, .3); background: rgba(239, 68, 68, .08); }
+
+.tabs { display: flex; gap: 0; border-bottom: 1px solid var(--border); margin-bottom: 1.25rem; }
+.tab { padding: 8px 4px; margin-right: 1.25rem; background: none; border: none; color: var(--muted-foreground); font-size: 13px; cursor: pointer; border-bottom: 2px solid transparent; }
+.tab:hover { color: var(--foreground); }
+.tab.active { color: var(--foreground); border-bottom-color: var(--foreground); }
+.tab-content { display: none; }
+.tab-content.active { display: block; }
+
+.stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0.75rem; margin-bottom: 1.25rem; }
+.stat-card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 1rem; }
+.stat-label { font-size: 11px; text-transform: uppercase; letter-spacing: .03em; color: var(--muted-foreground); margin-bottom: 6px; }
+.stat-value { font-size: 24px; font-weight: 700; }
+
+.code-viewer {
+    background: #000; border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 1rem; font-size: 12px; white-space: pre-wrap; word-break: break-word;
+    max-height: 600px; overflow: auto; color: #e4e4e7;
+}
+
+.muted { color: var(--muted-foreground); }
+.flex { display: flex; align-items: center; gap: 0.5rem; }
+.flex-between { display: flex; align-items: center; justify-content: space-between; }
+.mb-2 { margin-bottom: 1rem; }
+.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0.85rem; }
+@media (max-width: 640px) { .grid-2 { grid-template-columns: 1fr; } }
+
+.auth-shell {
+    min-height: 100vh; display: flex; align-items: center; justify-content: center;
+    background: radial-gradient(circle at top, #18181b, #09090b 60%); padding: 1rem;
+}
+.auth-card { width: 100%; max-width: 400px; }
+.auth-logo { text-align: center; margin-bottom: 1.5rem; font-size: 15px; font-weight: 600; color: var(--muted-foreground); }
+'''
+
+def render_navbar(active):
+    """Top navbar shared across all authenticated pages, with the current section highlighted."""
+    def link(endpoint, label):
+        cls = ' class="active"' if endpoint == active else ''
+        return '<a' + cls + ' href="{{ url_for(\'' + endpoint + '\') }}">' + label + '</a>'
+    links = (
+        link('dashboard', 'Dashboard') +
+        link('manage_devices', 'Devices') +
+        link('manage_config', 'Config') +
+        link('settings', 'Settings') +
+        link('manage_users', 'Users')
+    )
+    return ('''<header class="topbar">
+        <a class="brand" href="{{ url_for('dashboard') }}">Oxidized Manager</a>
+        <nav>''' + links + '''</nav>
+        <div class="right"><a class="btn btn-ghost btn-sm" href="{{ url_for('logout') }}">Logout</a></div>
+    </header>
+    ''')
+
 LOGIN_TEMPLATE = '''<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1984,7 +2148,7 @@ DEVICE_DETAIL_TEMPLATE = '''<!DOCTYPE html>
                     return;
                 }
                 out.innerHTML = '';
-                data.content.split('\n').forEach(function(line) {
+                data.content.split('\\n').forEach(function(line) {
                     var div = document.createElement('div');
                     if (line.startsWith('+') && !line.startsWith('+++')) {
                         div.className = 'diff-add';
