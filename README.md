@@ -72,8 +72,23 @@ DEBUG                 # default: False
 ```
 
 - **LibreNMS (optional):** Settings → enter LibreNMS URL + API token → enable sync. Devices can also always be added manually.
-- **GitHub backups (optional):** Settings → GitHub Integration → repo URL + personal access token (`repo` scope) + branch → enable.
+- **GitHub backups (optional):** Settings → GitHub Integration → repo URL + personal access token (`repo` scope) + branch → enable. See [Backing Up to GitHub](#backing-up-to-github) for full setup steps.
 - **Device groups:** Settings → Manage Groups → create groups to organize devices, with optional default credentials per group.
+
+### Backing Up to GitHub
+
+Pushes a copy of each device's config to a GitHub repo whenever a queued "Update Configuration" fetch completes, so you get off-site backups with full version history independent of Oxidized's own storage.
+
+1. **Create a repo on GitHub** to hold the backups (private is recommended) — initialize it with a README or any first commit, so its default branch actually exists before this app tries to clone it.
+2. **Generate a personal access token** with push access to that repo: on GitHub, Settings → Developer settings → Personal access tokens. A classic token needs the `repo` scope; a fine-grained token needs Read and Write access to "Contents" on that repo.
+3. In this app, go to **Settings → GitHub Integration** and fill in:
+   - **GitHub Repository URL** — the HTTPS clone URL, e.g. `https://github.com/<user>/oxidized-backups.git` (not the SSH form — the token is embedded into this URL for auth)
+   - **GitHub Personal Access Token** — the token from step 2
+   - **GitHub Branch** — the repo's default branch (`main` unless you changed it)
+   - Check **Push backups to GitHub**, then Save Settings
+4. If you see "GitPython not installed" instead of the form, run `pip install GitPython` in the app's virtualenv and reload the page.
+
+**How it pushes:** there's no push-on-a-timer — a push happens the next time anyone opens that device's detail page after Oxidized finishes fetching its new config (that's also when this app itself resolves whether the fetch succeeded, since Oxidized has no completion callback). Each push writes `<device_name>/<timestamp>.conf` into the repo, commits it, and pushes to the configured branch. The repo is cloned once to `~/.oxidized_manager/github_backup` on the server and reused after that.
 
 ## Usage
 
@@ -195,6 +210,11 @@ sudo nginx -t && sudo systemctl reload nginx
 **SSH test button disabled** → `pip install paramiko`
 
 **GitHub integration disabled** → `pip install GitPython`
+
+**Backups not showing up on GitHub** — a push only happens when someone opens the device's page after Oxidized finishes fetching (see [Backing Up to GitHub](#backing-up-to-github)), so open that device's page first. If it still doesn't push, check the logs for the actual git error (bad token, wrong branch, repo doesn't exist yet):
+```bash
+sudo journalctl -u oxidized-manager | grep -i "GitHub push error\|GitHub repo init error"
+```
 
 **Database issues**
 ```bash

@@ -1108,12 +1108,16 @@ def get_device_group(device_name):
             return dev.get('group') or 'default'
     return 'default'
 
-def reconcile_queued_backups(device_name, history):
+def reconcile_queued_backups(device_name, history, config_content=None):
     """Resolve 'queued' backup_history rows left over from the async 'Update
     Configuration' action (Oxidized's /node/next has no callback, so we can't
     know synchronously whether it succeeded). If a version has appeared in
     Oxidized's own history since the row was queued, mark it successful;
-    if too much time has passed with nothing new, mark it timed out."""
+    if too much time has passed with nothing new, mark it timed out.
+
+    If a row resolves successfully and GitHub sync is enabled, this is also
+    the point where the fetched config actually gets pushed -- there's no
+    earlier point where we know the fetch succeeded."""
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
@@ -1134,6 +1138,7 @@ def reconcile_queued_backups(device_name, history):
                 pass
 
     now = datetime.now(timezone.utc)
+    resolved_success = False
     for row in queued:
         try:
             queued_at = datetime.strptime(row['created_at'], '%Y-%m-%d %H:%M:%S').replace(tzinfo=timezone.utc)
@@ -1143,12 +1148,16 @@ def reconcile_queued_backups(device_name, history):
 
         if any(e >= queued_epoch for e in history_epochs):
             c.execute("UPDATE backup_history SET status = 'success' WHERE id = ?", (row['id'],))
+            resolved_success = True
         elif now - queued_at > timedelta(minutes=3):
             c.execute('''UPDATE backup_history SET status = 'error',
                          error_message = 'Timed out waiting for Oxidized to complete the fetch'
                          WHERE id = ?''', (row['id'],))
     conn.commit()
     conn.close()
+
+    if resolved_success and config_content and github_client.enabled:
+        github_client.push_backup(device_name, config_content)
 
 @app.route('/device/<device_name>')
 @requires_auth
@@ -1157,7 +1166,7 @@ def device_detail(device_name):
     group = get_device_group(device_name)
     config = get_oxidized_node_config(device_name, group)
     history = get_oxidized_node_history(device_name, group)
-    reconcile_queued_backups(device_name, history)
+    reconcile_queued_backups(device_name, history, config)
 
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
