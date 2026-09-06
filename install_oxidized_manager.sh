@@ -661,6 +661,15 @@ if [ "$RUN_AS_OXIDIZED" != true ]; then
     SERVICE_USER="root"
 fi
 
+# If Nginx is fronting the admin page on port 80, gunicorn itself only needs
+# to be reachable from Nginx (loopback) -- it should never be exposed on
+# $APP_PORT directly. Only fall back to a wildcard bind (and allow the port
+# through UFW below) when there's no Nginx in front of it.
+APP_BIND_ADDR="127.0.0.1"
+if [ "$NGINX_ADMIN_ENABLED" != true ]; then
+    APP_BIND_ADDR="0.0.0.0"
+fi
+
 cat > /etc/systemd/system/oxidized-manager.service << EOF
 [Unit]
 Description=Oxidized Manager Admin Page
@@ -675,7 +684,7 @@ Environment="PATH=$INSTALL_DIR/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin
 Environment="OXIDIZED_CONFIG_DIR=$CONFIG_DIR"
 Environment="APP_DB_PATH=/home/oxidized/.oxidized_manager/app.db"
 Environment="PORT=$APP_PORT"
-ExecStart=$INSTALL_DIR/venv/bin/gunicorn --workers 4 --bind 0.0.0.0:$APP_PORT --timeout 60 oxidized_nms_manager:app
+ExecStart=$INSTALL_DIR/venv/bin/gunicorn --workers 4 --bind $APP_BIND_ADDR:$APP_PORT --timeout 60 oxidized_nms_manager:app
 Restart=always
 RestartSec=10
 StandardOutput=journal
@@ -698,11 +707,14 @@ section "Firewall Configuration"
 
 if ufw status | grep -q "Status: active"; then
     info "UFW is active. Adding firewall rules..."
-    ufw allow "$APP_PORT/tcp"
-    RULES_ADDED="$APP_PORT (admin page, direct)"
+    RULES_ADDED=""
     if [ "$NGINX_ADMIN_ENABLED" = true ]; then
         ufw allow 80/tcp
-        RULES_ADDED="$RULES_ADDED, 80 (admin page via Nginx)"
+        RULES_ADDED="80 (admin page via Nginx)"
+        ufw delete allow "$APP_PORT/tcp" &> /dev/null || true
+    else
+        ufw allow "$APP_PORT/tcp"
+        RULES_ADDED="$APP_PORT (admin page, direct)"
     fi
     if [ "$NGINX_OXIDIZED_EXPOSED" = true ]; then
         ufw allow 8888/tcp
@@ -748,7 +760,7 @@ echo "╚═══════════════════════�
 echo ""
 if [ "$NGINX_ADMIN_ENABLED" = true ]; then
 echo "Web Interface: http://$SERVER_IP/  (via Nginx, port 80)"
-echo "                http://$SERVER_IP:$APP_PORT/  (direct)"
+echo "                (port $APP_PORT is not exposed directly -- gunicorn is bound to 127.0.0.1)"
 else
 echo "Web Interface: http://$SERVER_IP:$APP_PORT/"
 fi
