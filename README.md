@@ -1,4 +1,4 @@
-# Oxidized + LibreNMS Manager
+# Oxidized
 
 A NOC dashboard for managing [Oxidized](https://github.com/ytti/oxidized) configuration backups, with optional [LibreNMS](https://www.librenms.org) device sync, backup history, and multi-user support.
 
@@ -12,6 +12,10 @@ A NOC dashboard for managing [Oxidized](https://github.com/ytti/oxidized) config
 - Optional LibreNMS integration — auto-sync devices, pull alerts (the app is fully standalone without it)
 - Multi-user support with roles (admin/operator) and audit logging
 - REST API for integrations
+
+![admin](doc/admin.png)
+
+![diff](doc/diff.png)
 
 ## Requirements
 
@@ -77,19 +81,21 @@ DEBUG                 # default: False
 
 ### Backing Up to GitHub
 
-Pushes a copy of each device's config to a GitHub repo whenever a queued "Update Configuration" fetch completes, so you get off-site backups with full version history independent of Oxidized's own storage.
+Mirrors Oxidized's **own** git repository (the one it already maintains via `output.git` — full per-device commit history, the same data powering the Versions/diff tabs) to a GitHub remote. This is not a separate copy with its own format: Oxidized's native git output has no remote/push option of its own ([docs](https://github.com/ytti/oxidized/blob/master/docs/Outputs.md#output-git)), so this just adds a GitHub remote to that existing repo and pushes it — real history, not flattened snapshots.
 
-1. **Create a repo on GitHub** to hold the backups (private is recommended) — initialize it with a README or any first commit, so its default branch actually exists before this app tries to clone it.
+Requires `output: git` with `single_repo: true` in the Oxidized config (the installer's default template already sets this up).
+
+1. **Create a repo on GitHub** to hold the mirror (private is recommended) — initialize it with a README or any first commit, so its default branch exists.
 2. **Generate a personal access token** with push access to that repo: on GitHub, Settings → Developer settings → Personal access tokens. A classic token needs the `repo` scope; a fine-grained token needs Read and Write access to "Contents" on that repo.
 3. In this app, go to **Settings → GitHub Integration** and fill in:
    - **GitHub Repository URL** — the HTTPS clone URL, e.g. `https://github.com/<user>/oxidized-backups.git` (not the SSH form — the token is embedded into this URL for auth)
    - **GitHub Personal Access Token** — the token from step 2
-   - **GitHub Branch** — the repo's default branch (`main` unless you changed it)
-   - Check **Push backups to GitHub**, then Save Settings
+   - **GitHub Branch** — the branch name to push to on GitHub (`main` unless you changed it; this doesn't have to match whatever local branch name Oxidized's bare repo happens to use internally)
+   - Check **Push to GitHub**, then Save Settings
 4. If you see "GitPython not installed" instead of the form, run `pip install GitPython` in the app's virtualenv and reload the page.
-5. Click **Test GitHub Push**, right below Save Settings, to push a throwaway commit immediately and confirm the repo URL/token/branch actually work — no need to wait for a real device backup to find out a token was wrong.
+5. Click **Test GitHub Push**, right below Save Settings, to push immediately and confirm the repo URL/token/branch actually work — no need to wait for a real device fetch to find out a token was wrong.
 
-**How it pushes:** outside of that test button, there's no push-on-a-timer — a push happens the next time anyone opens that device's detail page after Oxidized finishes fetching its new config (that's also when this app itself resolves whether the fetch succeeded, since Oxidized has no completion callback). Each push writes `<device_name>/<timestamp>.conf` into the repo, commits it, and pushes to the configured branch. The repo is cloned once to `~/.oxidized_manager/github_backup` on the server and reused after that.
+**How it pushes:** outside of that test button, there's no push-on-a-timer — a push happens the next time anyone opens any device's detail page after Oxidized finishes fetching a new config (that's also when this app itself resolves whether the fetch succeeded, since Oxidized has no completion callback). Every push mirrors the *entire* local repo (all devices), not just the one that triggered it.
 
 ## Usage
 

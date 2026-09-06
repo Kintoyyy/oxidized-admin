@@ -480,106 +480,65 @@ def _redact_git_credentials(text):
     return re.sub(r'https://[^/@\s]+@', 'https://***@', str(text))
 
 class GitHubBackupClient:
+    """Pushes Oxidized's OWN local git repository (output.git.repo, with
+    single_repo: true) to a GitHub remote. This does not keep a separate
+    copy of anything -- Oxidized already commits every fetched config with
+    full history there; this just mirrors that repo to GitHub so it isn't
+    only sitting on one host. See docs/Outputs.md#output-git in ytti/oxidized:
+    the native git output has no remote/push option of its own, hence this."""
+
+    REMOTE_NAME = 'github_backup'
+
     def __init__(self):
-        self.enabled = False
         self.repo_url = get_setting('github_repo_url', '')
         self.branch = get_setting('github_branch', 'main')
         self.token = get_setting('github_token', '')
-        self.local_path = Path.home() / '.oxidized_manager' / 'github_backup'
-        
-        if self.repo_url and self.token and HAS_GITPYTHON:
-            self.enabled = True
-    
-    def _repo_matches_configured_url(self, repo):
-        """Compare the local clone's origin against the configured repo URL,
-        ignoring an embedded token and a trailing '.git'/slash so a token
-        rotation alone doesn't look like a different repo."""
-        def normalize(url):
-            url = re.sub(r'^https://[^@]+@', 'https://', url.strip())
-            if url.endswith('.git'):
-                url = url[:-4]
-            return url.rstrip('/')
-        try:
-            return normalize(repo.remotes.origin.url) == normalize(self.repo_url)
-        except Exception:
-            return False
+        self.enabled = bool(self.repo_url and self.token and HAS_GITPYTHON)
 
-    def init_repo(self):
-        """Initialize the local clone, (re-)cloning it if it's missing,
-        broken, or pointing at a different repo than what's configured now.
-        A prior failed clone (bad token, network error, etc.) can leave a
-        partial/invalid directory behind, and just checking .exists() would
-        keep reusing that broken directory forever instead of retrying."""
+    def _oxidized_repo_path(self):
+        """Resolve the local path of Oxidized's git output repo, or None if
+        it isn't configured the way this feature requires (output.git with
+        single_repo: true -- see class docstring for why single_repo)."""
+        config = read_oxidized_config()
+        output_cfg = config.get('output') or {}
+        git_cfg = output_cfg.get('git') or {}
+        if output_cfg.get('default') != 'git' or not git_cfg.get('single_repo'):
+            return None
+        repo = git_cfg.get('repo')
+        return repo if repo and Path(repo).exists() else None
+
+    def push(self):
+        """Push Oxidized's local git repo to the configured GitHub remote."""
         if not self.enabled or not HAS_GITPYTHON:
             return False
 
-        try:
-            needs_clone = True
-            if self.local_path.exists():
-                repo = None
-                try:
-                    repo = Repo(str(self.local_path))
-                    if not repo.bare and repo.head.is_valid() and self._repo_matches_configured_url(repo):
-                        needs_clone = False
-                except Exception:
-                    pass
-                finally:
-                    if repo is not None:
-                        try:
-                            repo.close()
-                        except Exception:
-                            pass
-                if needs_clone:
-                    # Not ignore_errors: if this can't actually be removed
-                    # (e.g. a permissions/lock issue), the clone below would
-                    # just fail again into the same broken directory with a
-                    # more confusing error -- better to surface it here.
-                    shutil.rmtree(self.local_path)
-
-            if needs_clone:
-                # "x-access-token:<token>@" (explicit user:pass form), not
-                # just "<token>@" -- some git/libcurl versions only skip the
-                # credential prompt with a real user:pass pair; a bare
-                # username with no password can still trigger an interactive
-                # prompt, which fails outright with no TTY attached (as seen
-                # from a systemd service: "could not read Password ... No
-                # such device or address").
-                auth_url = self.repo_url.replace('https://', f'https://x-access-token:{self.token}@')
-                cloned = Repo.clone_from(auth_url, str(self.local_path), branch=self.branch)
-                try:
-                    cloned.close()
-                except Exception:
-                    pass
-            return True
-        except Exception as e:
-            print(f'GitHub repo init error: {_redact_git_credentials(e)}')
-            return False
-
-    def push_backup(self, device_name, config_content):
-        """Push backup to GitHub."""
-        if not self.enabled or not HAS_GITPYTHON:
+        repo_path = self._oxidized_repo_path()
+        if not repo_path:
+            print('GitHub push error: Oxidized is not configured with output.git '
+                  'and single_repo: true, or its repo has no commits yet')
             return False
 
         repo = None
         try:
-            if not self.init_repo():
-                return False
+            repo = Repo(repo_path)
 
-            repo = Repo(str(self.local_path))
+            # "x-access-token:<token>@" (explicit user:pass form), not just
+            # "<token>@" -- some git/libcurl versions only skip the
+            # credential prompt with a real user:pass pair; a bare username
+            # with no password can trigger an interactive prompt, which fails
+            # outright with no TTY attached ("could not read Password ...
+            # No such device or address").
+            auth_url = self.repo_url.replace('https://', f'https://x-access-token:{self.token}@')
+            remote = next((r for r in repo.remotes if r.name == self.REMOTE_NAME), None)
+            if remote is None:
+                remote = repo.create_remote(self.REMOTE_NAME, auth_url)
+            else:
+                remote.set_url(auth_url)
 
-            # Create device directory
-            device_dir = self.local_path / device_name
-            device_dir.mkdir(exist_ok=True)
-
-            # Write config
-            config_file = device_dir / f'{datetime.now().strftime("%Y%m%d_%H%M%S")}.conf'
-            config_file.write_text(config_content)
-
-            # Commit and push
-            repo.index.add([str(config_file)])
-            repo.index.commit(f'Backup {device_name} at {datetime.now()}')
-            repo.remotes.origin.push(self.branch)
-
+            # Oxidized's repo is bare and manipulated purely through rugged's
+            # object/index API, never checked out -- push whatever HEAD
+            # currently points to, regardless of its local branch name.
+            repo.git.push(self.REMOTE_NAME, f'HEAD:refs/heads/{self.branch}')
             return True
         except Exception as e:
             print(f'GitHub push error: {_redact_git_credentials(e)}')
@@ -1172,7 +1131,7 @@ def get_device_group(device_name):
             return dev.get('group') or 'default'
     return 'default'
 
-def reconcile_queued_backups(device_name, history, config_content=None):
+def reconcile_queued_backups(device_name, history):
     """Resolve 'queued' backup_history rows left over from the async 'Update
     Configuration' action (Oxidized's /node/next has no callback, so we can't
     know synchronously whether it succeeded). If a version has appeared in
@@ -1180,8 +1139,8 @@ def reconcile_queued_backups(device_name, history, config_content=None):
     if too much time has passed with nothing new, mark it timed out.
 
     If a row resolves successfully and GitHub sync is enabled, this is also
-    the point where the fetched config actually gets pushed -- there's no
-    earlier point where we know the fetch succeeded."""
+    the point where Oxidized's own git repo gets pushed to GitHub -- there's
+    no earlier point where we know the fetch succeeded."""
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
@@ -1220,8 +1179,8 @@ def reconcile_queued_backups(device_name, history, config_content=None):
     conn.commit()
     conn.close()
 
-    if resolved_success and config_content and github_client.enabled:
-        github_client.push_backup(device_name, config_content)
+    if resolved_success and github_client.enabled:
+        github_client.push()
 
 @app.route('/device/<device_name>')
 @requires_auth
@@ -1230,7 +1189,7 @@ def device_detail(device_name):
     group = get_device_group(device_name)
     config = get_oxidized_node_config(device_name, group)
     history = get_oxidized_node_history(device_name, group)
-    reconcile_queued_backups(device_name, history, config)
+    reconcile_queued_backups(device_name, history)
 
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -1684,19 +1643,18 @@ def api_oxidized_test():
 @requires_auth
 @requires_admin
 def api_github_test():
-    """Push a throwaway commit to the configured GitHub repo, to verify the
+    """Push Oxidized's local git repo to GitHub right now, to verify the
     integration end-to-end without waiting for a real device fetch to resolve."""
     if not HAS_GITPYTHON:
         return jsonify({'status': 'error', 'message': 'GitPython not installed'}), 400
     if not github_client.enabled:
         return jsonify({'status': 'error', 'message': 'GitHub sync is not enabled - fill in the repo URL, token, and Save Settings first'}), 400
 
-    test_content = f'Oxidized Manager connectivity test at {datetime.now().isoformat()}\n'
-    ok = github_client.push_backup('_connectivity_test', test_content)
+    ok = github_client.push()
     log_audit('github_push_test', 'settings', details='success' if ok else 'failed')
     if ok:
         return jsonify({'status': 'success',
-                         'message': f'Pushed a test commit to branch "{github_client.branch}" - check the "_connectivity_test" folder in your repo.'})
+                         'message': f'Pushed Oxidized\'s repo to branch "{github_client.branch}" on GitHub.'})
     return jsonify({'status': 'error',
                      'message': 'Push failed - check server logs for the git error: sudo journalctl -u oxidized-manager | grep -i github'}), 500
 
@@ -3229,6 +3187,7 @@ SETTINGS_TEMPLATE = '''<!DOCTYPE html>
                 {% if not settings.has_gitpython %}
                 <div class="alert alert-danger">GitPython not installed. Run: <code>pip install GitPython</code></div>
                 {% endif %}
+                <div class="help-text mb-2">Mirrors Oxidized's own git repository (full per-device history, requires <code>output: git</code> with <code>single_repo: true</code>) to a GitHub remote -- not a separate copy, the real thing.</div>
                 <div class="field">
                     <label>GitHub Repository URL</label>
                     <input type="text" name="github_repo_url" placeholder="https://github.com/user/oxidized-backups.git" value="{{ settings.github_repo_url }}">
@@ -3243,7 +3202,7 @@ SETTINGS_TEMPLATE = '''<!DOCTYPE html>
                 </div>
                 <div class="flex" style="margin-bottom: 0;">
                     <input type="checkbox" name="github_sync_enabled" id="github_sync" style="width: auto;" {% if settings.github_sync_enabled %}checked{% endif %} {% if not settings.has_gitpython %}disabled{% endif %}>
-                    <label for="github_sync" style="margin: 0;">Push backups to GitHub</label>
+                    <label for="github_sync" style="margin: 0;">Push to GitHub</label>
                 </div>
             </div>
         </div>
@@ -3255,7 +3214,7 @@ SETTINGS_TEMPLATE = '''<!DOCTYPE html>
         <button type="button" class="btn btn-outline btn-sm" id="test-github-btn" onclick="testGithubPush()"><i class="bi bi-github"></i>Test GitHub Push</button>
         <span id="test-github-result" style="font-size: 13px;"></span>
     </div>
-    <div class="help-text mb-2">Pushes a throwaway test commit right now, using whatever's currently saved above (save first if you just changed something) - a quick way to check the repo URL/token/branch without waiting for a real device backup.</div>
+    <div class="help-text mb-2">Pushes Oxidized's repo right now, using whatever's currently saved above (save first if you just changed something) - a quick way to check the repo URL/token/branch without waiting for a real device fetch.</div>
 
     <div class="card mb-2" style="margin-top: 1.25rem;">
         <div class="card-header"><div class="card-title"><i class="bi bi-info-circle"></i> About</div></div>
