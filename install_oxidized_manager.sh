@@ -447,10 +447,21 @@ if [[ "$SETUP_NGINX_ADMIN" =~ ^[Yy] ]]; then
     info "Installing Nginx..."
     apt install nginx -y
 
+    # Older versions of this installer named the port-80 site "oxidized" and
+    # pointed it at Oxidized itself (with basic auth), not the admin page. If
+    # that file is still enabled alongside the new "oxidized-admin" site,
+    # nginx silently prefers whichever loads first alphabetically ("oxidized"
+    # < "oxidized-admin") and keeps serving the old auth-protected site on
+    # port 80 -- remove it so the new one actually takes effect.
+    if [ -e /etc/nginx/sites-enabled/oxidized ] || [ -e /etc/nginx/sites-available/oxidized ]; then
+        info "Removing legacy Nginx site 'oxidized' from a previous install..."
+        rm -f /etc/nginx/sites-enabled/oxidized /etc/nginx/sites-available/oxidized
+    fi
+
     info "Writing Nginx config for the admin page (port 80 -> 127.0.0.1:$APP_PORT)..."
     cat > /etc/nginx/sites-available/oxidized-admin << EOF
 server {
-    listen 80;
+    listen 80 default_server;
     server_name _;
 
     location / {
