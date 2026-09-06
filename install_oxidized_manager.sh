@@ -692,6 +692,7 @@ Environment="PATH=$INSTALL_DIR/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin
 Environment="OXIDIZED_CONFIG_DIR=$CONFIG_DIR"
 Environment="APP_DB_PATH=/home/oxidized/.oxidized_manager/app.db"
 Environment="PORT=$APP_PORT"
+Environment="PYTHONUNBUFFERED=1"
 ExecStart=$INSTALL_DIR/venv/bin/gunicorn --workers 4 --bind $APP_BIND_ADDR:$APP_PORT --timeout 60 oxidized_nms_manager:app
 Restart=always
 RestartSec=10
