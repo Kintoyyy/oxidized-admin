@@ -398,7 +398,12 @@ if [ -f "$CONFIG_DIR/config" ]; then
         systemctl restart oxidized.service
         sleep 2
         info "Verifying Oxidized's REST/web interface..."
-        LISTEN_LINE=$( (ss -tlnp 2>/dev/null || netstat -tlnp 2>/dev/null) | grep ":8888")
+        # "|| true" matters here: with set -e, a plain "VAR=$(... | grep ...)"
+        # assignment where grep finds nothing (exit 1, meaning "not listening"
+        # -- exactly the case being checked for) kills the entire script right
+        # here with no error message, silently skipping everything after it
+        # (Nginx setup, the admin page install, its systemd service, ...).
+        LISTEN_LINE=$( (ss -tlnp 2>/dev/null || netstat -tlnp 2>/dev/null) | grep ":8888" || true)
         if [ -z "$LISTEN_LINE" ]; then
             warn "Oxidized does not appear to be listening on port 8888 at all."
             warn "Check: sudo systemctl status oxidized ; sudo journalctl -u oxidized -n 100"
@@ -433,7 +438,9 @@ if [ -e /etc/nginx/sites-enabled/oxidized ] || [ -e /etc/nginx/sites-available/o
     info "Removing legacy Nginx site 'oxidized' from a previous install..."
     rm -f /etc/nginx/sites-enabled/oxidized /etc/nginx/sites-available/oxidized
     if command -v nginx &> /dev/null && systemctl is-active --quiet nginx 2>/dev/null; then
-        nginx -t && systemctl reload nginx
+        # Best-effort reload; do not let a failure here (under set -e) abort
+        # the rest of the install over what's just a cleanup step.
+        nginx -t && systemctl reload nginx || warn "Could not reload Nginx after removing the legacy site; check 'nginx -t' manually."
     fi
 fi
 
