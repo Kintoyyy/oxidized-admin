@@ -608,7 +608,19 @@ def get_oxidized_node_history(node_name, group='default'):
             params={'node_full': node_full}, timeout=5
         )
         response.raise_for_status()
-        return response.json()
+        history = response.json()
+        # Oxidized's version entries carry a Ruby Time#to_s string
+        # ("2026-09-06 13:53:41 +0800"), not a numeric epoch -- add one so
+        # the Compare Versions dropdowns can show how old each version is,
+        # not just its absolute timestamp.
+        if isinstance(history, list):
+            for v in history:
+                if isinstance(v, dict) and v.get('date') and 'epoch' not in v:
+                    try:
+                        v['epoch'] = datetime.strptime(v['date'], '%Y-%m-%d %H:%M:%S %z').timestamp()
+                    except (ValueError, TypeError):
+                        pass
+        return history
     except Exception as e:
         print(f'Error fetching history: {e}')
         return []
