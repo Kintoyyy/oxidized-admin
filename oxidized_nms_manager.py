@@ -1905,6 +1905,11 @@ LOGO_SVG = (
     '</svg>'
 )
 
+# Same mark as LOGO_SVG, baked as a standalone SVG data URI (favicons render
+# outside any text context, so currentColor won't resolve -- use a literal fill).
+FAVICON_LINK = ('<link rel="icon" type="image/svg+xml" href="data:image/svg+xml;base64,'
+    'PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgd2lkdGg9IjMyIiBoZWlnaHQ9IjMyIj48Y2lyY2xlIGN4PSIxMiIgY3k9IjUiIHI9IjIuNiIgZmlsbD0iIzYwYTVmYSIvPjxjaXJjbGUgY3g9IjUiIGN5PSIxOC41IiByPSIyLjYiIGZpbGw9IiM2MGE1ZmEiLz48Y2lyY2xlIGN4PSIxOSIgY3k9IjE4LjUiIHI9IjIuNiIgZmlsbD0iIzYwYTVmYSIvPjxwYXRoIGQ9Ik0xMiA3LjZWMTJNMTIgMTJMNS44IDE2LjJNMTIgMTJMMTguMiAxNi4yIiBzdHJva2U9IiM2MGE1ZmEiIHN0cm9rZS13aWR0aD0iMS43IiBzdHJva2UtbGluZWNhcD0icm91bmQiLz48L3N2Zz4=">')
+
 def render_sidebar(active):
     """Left sidebar shared across all authenticated pages, with the current section highlighted."""
     def link(endpoint, icon, label):
@@ -1934,6 +1939,7 @@ LOGIN_TEMPLATE = '''<!DOCTYPE html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    ''' + FAVICON_LINK + '''
     <title>Login - Oxidized Manager</title>
     <style>''' + BASE_CSS + '''</style>
 </head>
@@ -1971,6 +1977,7 @@ SETUP_TEMPLATE = '''<!DOCTYPE html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    ''' + FAVICON_LINK + '''
     <title>Setup - Oxidized Manager</title>
     <style>''' + BASE_CSS + '''</style>
 </head>
@@ -2012,6 +2019,7 @@ DASHBOARD_TEMPLATE = '''<!DOCTYPE html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    ''' + FAVICON_LINK + '''
     <title>Dashboard - Oxidized Manager</title>
     <style>''' + BASE_CSS + '''
     </style>
@@ -2170,6 +2178,7 @@ DEVICE_DETAIL_TEMPLATE = '''<!DOCTYPE html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    ''' + FAVICON_LINK + '''
     <title>{{ device_name }} - Oxidized Manager</title>
     <style>''' + BASE_CSS + '''
         .diff-add { background: rgba(16, 185, 129, 0.15); color: #6ee7b7; }
@@ -2515,6 +2524,7 @@ DEVICE_MANAGEMENT_TEMPLATE = '''<!DOCTYPE html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    ''' + FAVICON_LINK + '''
     <title>Device Management - Oxidized Manager</title>
     <style>''' + BASE_CSS + '''
         .test-result { display: none; }
@@ -2786,6 +2796,7 @@ CONFIG_MANAGEMENT_TEMPLATE = '''<!DOCTYPE html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    ''' + FAVICON_LINK + '''
     <title>Config Management - Oxidized Manager</title>
     <style>''' + BASE_CSS + '''
         textarea { height: 60vh; font-size: 13px; }
@@ -2909,6 +2920,7 @@ LOGS_TEMPLATE = '''<!DOCTYPE html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    ''' + FAVICON_LINK + '''
     <title>Logs - Oxidized Manager</title>
     <style>''' + BASE_CSS + '''
         #log-viewer {
@@ -3003,6 +3015,7 @@ SETTINGS_TEMPLATE = '''<!DOCTYPE html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    ''' + FAVICON_LINK + '''
     <title>Settings - Oxidized Manager</title>
     <style>''' + BASE_CSS + '''</style>
 </head>
@@ -3206,6 +3219,7 @@ GROUPS_MANAGEMENT_TEMPLATE = '''<!DOCTYPE html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    ''' + FAVICON_LINK + '''
     <title>Group Management - Oxidized Manager</title>
     <style>''' + BASE_CSS + '''</style>
 </head>
@@ -3284,6 +3298,7 @@ USER_MANAGEMENT_TEMPLATE = '''<!DOCTYPE html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    ''' + FAVICON_LINK + '''
     <title>User Management - Oxidized Manager</title>
     <style>''' + BASE_CSS + '''</style>
 </head>
