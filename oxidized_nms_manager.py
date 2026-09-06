@@ -483,49 +483,99 @@ class GitHubBackupClient:
         if self.repo_url and self.token and HAS_GITPYTHON:
             self.enabled = True
     
+    def _repo_matches_configured_url(self, repo):
+        """Compare the local clone's origin against the configured repo URL,
+        ignoring an embedded token and a trailing '.git'/slash so a token
+        rotation alone doesn't look like a different repo."""
+        def normalize(url):
+            url = re.sub(r'^https://[^@]+@', 'https://', url.strip())
+            if url.endswith('.git'):
+                url = url[:-4]
+            return url.rstrip('/')
+        try:
+            return normalize(repo.remotes.origin.url) == normalize(self.repo_url)
+        except Exception:
+            return False
+
     def init_repo(self):
-        """Initialize Git repo if not exists."""
+        """Initialize the local clone, (re-)cloning it if it's missing,
+        broken, or pointing at a different repo than what's configured now.
+        A prior failed clone (bad token, network error, etc.) can leave a
+        partial/invalid directory behind, and just checking .exists() would
+        keep reusing that broken directory forever instead of retrying."""
         if not self.enabled or not HAS_GITPYTHON:
             return False
-        
+
         try:
-            if not self.local_path.exists():
-                # Clone repo
+            needs_clone = True
+            if self.local_path.exists():
+                repo = None
+                try:
+                    repo = Repo(str(self.local_path))
+                    if not repo.bare and repo.head.is_valid() and self._repo_matches_configured_url(repo):
+                        needs_clone = False
+                except Exception:
+                    pass
+                finally:
+                    if repo is not None:
+                        try:
+                            repo.close()
+                        except Exception:
+                            pass
+                if needs_clone:
+                    # Not ignore_errors: if this can't actually be removed
+                    # (e.g. a permissions/lock issue), the clone below would
+                    # just fail again into the same broken directory with a
+                    # more confusing error -- better to surface it here.
+                    shutil.rmtree(self.local_path)
+
+            if needs_clone:
                 auth_url = self.repo_url.replace('https://', f'https://{self.token}@')
-                Repo.clone_from(auth_url, str(self.local_path), branch=self.branch)
+                cloned = Repo.clone_from(auth_url, str(self.local_path), branch=self.branch)
+                try:
+                    cloned.close()
+                except Exception:
+                    pass
             return True
         except Exception as e:
             print(f'GitHub repo init error: {e}')
             return False
-    
+
     def push_backup(self, device_name, config_content):
         """Push backup to GitHub."""
         if not self.enabled or not HAS_GITPYTHON:
             return False
-        
+
+        repo = None
         try:
             if not self.init_repo():
                 return False
-            
+
             repo = Repo(str(self.local_path))
-            
+
             # Create device directory
             device_dir = self.local_path / device_name
             device_dir.mkdir(exist_ok=True)
-            
+
             # Write config
             config_file = device_dir / f'{datetime.now().strftime("%Y%m%d_%H%M%S")}.conf'
             config_file.write_text(config_content)
-            
+
             # Commit and push
             repo.index.add([str(config_file)])
             repo.index.commit(f'Backup {device_name} at {datetime.now()}')
             repo.remotes.origin.push(self.branch)
-            
+
             return True
         except Exception as e:
             print(f'GitHub push error: {e}')
             return False
+        finally:
+            if repo is not None:
+                try:
+                    repo.close()
+                except Exception:
+                    pass
 
 github_client = GitHubBackupClient()
 
