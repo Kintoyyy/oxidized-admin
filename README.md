@@ -111,27 +111,25 @@ sudo journalctl -u oxidized -f
 
 By default the installer binds Oxidized's own web GUI/API (port 8888) to `127.0.0.1` — it's never reachable from outside the host, since the admin page always talks to it over localhost. Port 80 is reserved for the admin page itself (via Nginx).
 
-If you need Oxidized's web GUI reachable from elsewhere, the installer offers two mutually-exclusive options when you re-run it:
+If you need Oxidized's web GUI reachable from elsewhere, the installer can put it behind Nginx on port 8888 (bound to the server's own IP, not `0.0.0.0`, so it doesn't collide with Oxidized's own loopback bind on the same port number), with basic auth required by default. LibreNMS's built-in Oxidized widget talks to the REST API directly and doesn't support basic auth, so if you say it needs access, the installer additionally allowlists just its IP to skip the password (`satisfy any` + `allow <ip>; deny all;`) — everyone else still needs one.
 
-- **Browser access, password-protected** — exposes it on port 8888 behind Nginx + basic auth, bound to the server's own IP (not `0.0.0.0`, so it doesn't collide with Oxidized's own loopback bind on the same port number).
-- **LibreNMS direct access** — LibreNMS's built-in Oxidized widget talks to the REST API directly and doesn't support basic auth, so instead this binds Oxidized's REST interface straight to the server's IP on port 8888 (no Nginx/auth in front), optionally scoped to just the LibreNMS host's IP via a UFW rule.
-
-To do either by hand instead of re-running the installer:
+To set this up by hand instead of re-running the installer:
 
 ```bash
-# Bind Oxidized to the server's IP instead of localhost
-sudo sed -i -E "s/^rest:.*/rest: <server-ip>:8888/" /home/oxidized/.config/oxidized/config
-sudo systemctl restart oxidized.service
-
-# Option A: put Nginx + basic auth in front of it
 sudo apt install nginx apache2-utils -y
 sudo htpasswd -c /etc/nginx/.htpasswd oxidized   # -c only on the first user
+
 sudo tee /etc/nginx/sites-available/oxidized-web > /dev/null << 'EOF'
 server {
     listen <server-ip>:8888;
     server_name _;
 
     location / {
+        # Omit these three lines if LibreNMS doesn't need unauthenticated access
+        satisfy any;
+        allow <librenms-ip>;
+        deny all;
+
         auth_basic "Oxidized Access";
         auth_basic_user_file /etc/nginx/.htpasswd;
 
@@ -145,9 +143,7 @@ server {
 EOF
 sudo ln -sf /etc/nginx/sites-available/oxidized-web /etc/nginx/sites-enabled/oxidized-web
 sudo nginx -t && sudo systemctl restart nginx
-
-# Option B: scope raw access to just the LibreNMS host via UFW instead
-sudo ufw allow from <librenms-ip> to any port 8888 proto tcp
+sudo ufw allow 8888/tcp   # if UFW is active
 ```
 
 ## Troubleshooting
