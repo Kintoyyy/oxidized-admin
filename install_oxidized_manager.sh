@@ -397,8 +397,12 @@ if [ -f "$CONFIG_DIR/config" ]; then
     if systemctl list-unit-files oxidized.service &> /dev/null; then
         systemctl restart oxidized.service
         sleep 2
-        info "Verifying Oxidized is no longer publicly reachable on port 8888..."
-        if (ss -tlnp 2>/dev/null || netstat -tlnp 2>/dev/null) | grep ":8888" | grep -qE '0\.0\.0\.0|\*:8888|:::8888'; then
+        info "Verifying Oxidized's REST/web interface..."
+        LISTEN_LINE=$( (ss -tlnp 2>/dev/null || netstat -tlnp 2>/dev/null) | grep ":8888")
+        if [ -z "$LISTEN_LINE" ]; then
+            warn "Oxidized does not appear to be listening on port 8888 at all."
+            warn "Check: sudo systemctl status oxidized ; sudo journalctl -u oxidized -n 100"
+        elif echo "$LISTEN_LINE" | grep -qE '0\.0\.0\.0|\*:8888|:::8888'; then
             warn "Oxidized still appears to be listening on ALL interfaces (0.0.0.0:8888), not just localhost."
             warn "It may have been re-saved with a public bind address afterwards (e.g. via the admin page's Config editor)."
             warn "Check: grep -E 'rest:|listen:' $CONFIG_DIR/config"
