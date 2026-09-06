@@ -1707,10 +1707,16 @@ def settings():
 
     oxidized_status = check_oxidized_installed()
     deployed_version = get_deployed_version()
+    # Oxidized refuses to start at all when its device source is empty
+    # ("source returns no usable nodes") rather than idling -- this is by
+    # far the most common reason it's unreachable on a fresh install, so
+    # it's worth calling out specifically instead of just "not reachable".
+    no_devices_yet = not oxidized_status and not read_router_db()
 
     return render_template_string(SETTINGS_TEMPLATE,
                                   settings=settings_data,
                                   oxidized_status=oxidized_status,
+                                  no_devices_yet=no_devices_yet,
                                   deployed_version=deployed_version)
 
 @app.route('/users', methods=['GET', 'POST'])
@@ -3115,6 +3121,8 @@ SETTINGS_TEMPLATE = '''<!DOCTYPE html>
 
     {% if oxidized_status %}
     <div class="alert alert-success">Oxidized API is running and reachable</div>
+    {% elif no_devices_yet %}
+    <div class="alert alert-danger">Oxidized isn't running because it has no devices configured yet -- it exits on startup ("source returns no usable nodes") instead of idling when its device list is empty. Add at least one device on the <a href="{{ url_for('manage_devices') }}">Devices</a> page and it will come up within a few seconds (it auto-restarts on failure).</div>
     {% else %}
     <div class="alert alert-danger">Oxidized API is not reachable. Please check your installation.</div>
     {% endif %}
