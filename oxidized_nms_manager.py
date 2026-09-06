@@ -1203,20 +1203,11 @@ def device_detail(device_name):
     history = get_oxidized_node_history(device_name, group)
     reconcile_queued_backups(device_name, history)
 
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-    c.execute('SELECT * FROM backup_history WHERE device_name = ? ORDER BY created_at DESC LIMIT 20',
-              (device_name,))
-    backups = [dict(row) for row in c.fetchall()]
-    conn.close()
-
     return render_template_string(DEVICE_DETAIL_TEMPLATE,
                                   device_name=device_name,
                                   device_group=group,
                                   config=config,
-                                  history=history,
-                                  backups=backups)
+                                  history=history)
 
 @app.route('/device/<device_name>/config')
 @requires_auth
@@ -2309,7 +2300,6 @@ DEVICE_DETAIL_TEMPLATE = '''<!DOCTYPE html>
     <div class="tabs">
         <button class="tab active" onclick="showTab('config')"><i class="bi bi-file-earmark-text"></i> Config</button>
         <button class="tab" onclick="showTab('history')"><i class="bi bi-clock-history"></i> Versions</button>
-        <button class="tab" onclick="showTab('backups')"><i class="bi bi-archive"></i> Backups</button>
     </div>
 
     <div id="config" class="tab-content active">
@@ -2382,28 +2372,6 @@ DEVICE_DETAIL_TEMPLATE = '''<!DOCTYPE html>
         </div>
     </div>
 
-    <div id="backups" class="tab-content">
-        {% for backup in backups %}
-        <div class="card flex-between" style="padding: 1rem; margin-bottom: 0.75rem;">
-            <div>
-                <div class="muted" style="font-size: 12px;">{{ backup.created_at }}</div>
-                <div>Status: <span class="badge {{ 'badge-success' if backup.status == 'success' else ('badge-warning' if backup.status == 'queued' else 'badge-destructive') }}">{{ backup.status }}</span></div>
-                {% if backup.file_size %}
-                <div class="muted" style="font-size: 12px;">Size: {{ backup.file_size }} bytes</div>
-                {% endif %}
-                {% if backup.error_message %}
-                <div class="muted" style="font-size: 12px;">{{ backup.error_message }}</div>
-                {% endif %}
-            </div>
-            <div class="flex">
-                <a class="btn btn-outline btn-sm" href="{{ url_for('get_device_config', device_name=device_name) }}" target="_blank" title="Previews the device's current config (this app doesn't store a separate copy per backup entry)"><i class="bi bi-eye"></i>View</a>
-                <a class="btn btn-outline btn-sm" href="{{ url_for('get_device_config', device_name=device_name) }}" download="{{ device_name }}.conf" title="Downloads the device's current config (this app doesn't store a separate copy per backup entry)"><i class="bi bi-download"></i>Download</a>
-            </div>
-        </div>
-        {% else %}
-        <div class="muted">No backups logged yet through this app. Click "Update Configuration" on the Config tab to trigger one - Oxidized's own scheduled backups show up under Versions instead.</div>
-        {% endfor %}
-    </div>
 </div></main>
 </div>
 
