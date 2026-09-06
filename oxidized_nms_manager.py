@@ -2343,8 +2343,10 @@ DEVICE_DETAIL_TEMPLATE = '''<!DOCTYPE html>
                 </div>
             </div>
         </div>
+    </div>
 
-        <div class="table-wrap">
+    <div id="version-view" class="tab-content">
+        <div class="table-wrap mb-2">
             <table class="table">
                 <thead>
                     <tr><th>Version</th><th>Date</th><th>Actions</th></tr>
@@ -2366,10 +2368,7 @@ DEVICE_DETAIL_TEMPLATE = '''<!DOCTYPE html>
                 </tbody>
             </table>
         </div>
-    </div>
-
-    <div id="version-view" class="tab-content">
-        <div id="version-view-empty" class="muted">Click "View" on a version in the Versions tab to see it here.</div>
+        <div id="version-view-empty" class="muted">Click "View" on a version above to see it here.</div>
         <div id="version-content-actions" class="flex mb-2" style="display: none;">
             <button class="btn btn-outline btn-sm" onclick="rawView('version-content', '{{ device_name }}-version.conf')"><i class="bi bi-code-slash"></i>Raw</button>
             <button class="btn btn-outline btn-sm" onclick="downloadContent('version-content', '{{ device_name }}-version.conf')"><i class="bi bi-download"></i>Download</button>
