@@ -1035,13 +1035,22 @@ def dashboard():
     # last-changed) only happens below for the current page's devices.
     all_devices = []
     for node in oxidized_nodes:
+        last_update = node.get('time')
+        last_update_epoch = None
+        if last_update:
+            try:
+                last_update_epoch = datetime.strptime(last_update, '%Y-%m-%d %H:%M:%S UTC') \
+                    .replace(tzinfo=timezone.utc).timestamp()
+            except (TypeError, ValueError):
+                pass
         all_devices.append({
             'name': node.get('name'),
             'ip': node.get('ip'),
             'model': node.get('model'),
             'group': node.get('group') or 'default',
             'status': node.get('status'),
-            'last_update': node.get('time'),
+            'last_update': last_update,
+            'last_update_epoch': last_update_epoch,
         })
 
     # Summary stats reflect the whole fleet, regardless of search/filter/page.
@@ -1096,20 +1105,24 @@ def dashboard():
         # this device's own version history instead - which is also more meaningful
         # (it only changes when the config actually differs, not just on every poll).
         last_changed = None
+        last_changed_epoch = None
         history = get_oxidized_node_history(device['name'], device['group'])
         if history:
             newest = history[0]
             epoch = newest.get('epoch') if isinstance(newest, dict) else None
             if epoch is not None:
                 try:
-                    last_changed = datetime.fromtimestamp(float(epoch), tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
+                    last_changed_epoch = float(epoch)
+                    last_changed = datetime.fromtimestamp(last_changed_epoch, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
                 except (TypeError, ValueError, OSError):
                     last_changed = None
+                    last_changed_epoch = None
             if last_changed is None:
                 last_changed = newest.get('date') if isinstance(newest, dict) else None
 
         device['metadata'] = dict(meta) if meta else {}
         device['mtime'] = last_changed
+        device['mtime_epoch'] = last_changed_epoch
         device['total_failures'] = node_stats.get('total_failures')
         device['failure_rate'] = node_stats.get('failure_rate')
         device['avg_run_time'] = node_stats.get('avg_run_time')
@@ -2193,8 +2206,8 @@ DASHBOARD_TEMPLATE = '''<!DOCTYPE html>
                             {{ device.status or 'unknown' }}
                         </span>
                     </td>
-                    <td style="white-space: nowrap;">{{ device.last_update or 'never' }}</td>
-                    <td style="white-space: nowrap;">{{ device.mtime or 'unknown' }}</td>
+                    <td class="dash-time" data-epoch="{{ device.last_update_epoch if device.last_update_epoch is not none else '' }}" style="white-space: nowrap;">{{ device.last_update or 'never' }}</td>
+                    <td class="dash-time" data-epoch="{{ device.mtime_epoch if device.mtime_epoch is not none else '' }}" style="white-space: nowrap;">{{ device.mtime or 'unknown' }}</td>
                     <td>{{ device.total_failures if device.total_failures is not none else '-' }}</td>
                     <td>{{ device.failure_rate if device.failure_rate is not none else '-' }}</td>
                     <td>{{ device.avg_run_time if device.avg_run_time is not none else '-' }}</td>
@@ -2266,6 +2279,27 @@ DASHBOARD_TEMPLATE = '''<!DOCTYPE html>
                 btn.disabled = false;
             });
     }
+
+    function timeAgo(epochSeconds) {
+        var diff = (Date.now() / 1000) - epochSeconds;
+        if (diff < 0) diff = 0;
+        var units = [
+            ['year', 31536000], ['month', 2592000], ['day', 86400],
+            ['hour', 3600], ['minute', 60], ['second', 1]
+        ];
+        for (var i = 0; i < units.length; i++) {
+            var count = Math.floor(diff / units[i][1]);
+            if (count >= 1) {
+                return count + ' ' + units[i][0] + (count === 1 ? '' : 's') + ' ago';
+            }
+        }
+        return 'just now';
+    }
+
+    document.querySelectorAll('.dash-time').forEach(function(el) {
+        var epoch = el.getAttribute('data-epoch');
+        if (epoch) el.textContent += ' (' + timeAgo(parseFloat(epoch)) + ')';
+    });
     </script>
 </body>
 </html>'''
