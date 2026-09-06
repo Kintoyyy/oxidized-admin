@@ -13,6 +13,9 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import tempfile
+import threading
+import time
 from datetime import datetime, timedelta, timezone
 from functools import wraps
 from pathlib import Path
@@ -701,8 +704,15 @@ librenms = LibreNMSClient()
 # ============================================================================
 
 def ruby_regexp_constructor(loader, node):
-    """Handle !ruby/regexp tags in YAML."""
-    return loader.construct_scalar(node)
+    """Handle !ruby/regexp tags in YAML (e.g. the 'prompt' field). Strips the
+    /pattern/flags delimiters so the stored value is a bare regex pattern string -
+    Ruby's String#match?/=~ accept a String just like a Regexp, so this round-trips
+    safely through a plain YAML string once the tag itself is gone. Keeping the
+    literal slashes instead (as construct_scalar alone would) turns the pattern into
+    one that tries to match literal '/' characters, breaking prompt detection."""
+    value = loader.construct_scalar(node)
+    m = re.match(r'^/(.*)/([a-zA-Z]*)$', value, re.DOTALL)
+    return m.group(1) if m else value
 
 yaml.SafeLoader.add_constructor("!ruby/regexp", ruby_regexp_constructor)
 
@@ -980,15 +990,33 @@ def dashboard():
         c.execute('SELECT * FROM device_metadata WHERE device_ip = ?', (node.get('ip'),))
         meta = c.fetchone()
         node_stats = oxidized_stats.get(node.get('name'), {})
+        node_group = node.get('group') or 'default'
+
+        # /nodes.json doesn't include a usable "last changed" timestamp (that's only
+        # on the single-node detail endpoint), so derive it from the newest entry in
+        # this device's own version history instead - which is also more meaningful
+        # (it only changes when the config actually differs, not just on every poll).
+        last_changed = None
+        history = get_oxidized_node_history(node.get('name'), node_group)
+        if history:
+            newest = history[0]
+            epoch = newest.get('epoch') if isinstance(newest, dict) else None
+            if epoch is not None:
+                try:
+                    last_changed = datetime.fromtimestamp(float(epoch), tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
+                except (TypeError, ValueError, OSError):
+                    last_changed = None
+            if last_changed is None:
+                last_changed = newest.get('date') if isinstance(newest, dict) else None
 
         devices.append({
             'name': node.get('name'),
             'ip': node.get('ip'),
             'model': node.get('model'),
-            'group': node.get('group') or 'default',
+            'group': node_group,
             'status': node.get('status'),
             'last_update': node.get('time'),
-            'mtime': node.get('mtime'),
+            'mtime': last_changed,
             'metadata': dict(meta) if meta else {},
             'total_failures': node_stats.get('total_failures'),
             'failure_rate': node_stats.get('failure_rate'),
@@ -1326,11 +1354,76 @@ def manage_config():
                     flash('Error saving configuration', 'danger')
             except yaml.YAMLError as e:
                 flash(f'YAML error: {str(e)}', 'danger')
-        
+
+        elif request.form.get('action') == 'update_quick_settings':
+            for key in ('debug', 'resolve_dns', 'run_once', 'use_max_threads', 'next_adds_job', 'use_syslog'):
+                config[key] = request.form.get(key) == 'on'
+            try:
+                config['interval'] = int(request.form.get('interval', config.get('interval', 3600)))
+                config['threads'] = int(request.form.get('threads', config.get('threads', 30)))
+                config['timeout'] = int(request.form.get('timeout', config.get('timeout', 20)))
+                config['retries'] = int(request.form.get('retries', config.get('retries', 3)))
+                config['timelimit'] = int(request.form.get('timelimit', config.get('timelimit', 300)))
+            except ValueError:
+                flash('Interval/Threads/Timeout/Retries/Time Limit must be whole numbers', 'danger')
+                return redirect(url_for('manage_config'))
+
+            if write_oxidized_config(config):
+                flash('Quick settings saved successfully', 'success')
+            else:
+                flash('Error saving configuration', 'danger')
+
         return redirect(url_for('manage_config'))
     
     config_yaml = yaml.dump(config, default_flow_style=False)
     return render_template_string(CONFIG_MANAGEMENT_TEMPLATE, config=config, config_yaml=config_yaml)
+
+APP_REPO_URL = 'https://github.com/Kintoyyy/oxidized-admin.git'
+
+@app.route('/api/app/update', methods=['POST'])
+@requires_auth
+@requires_admin
+def api_app_update():
+    """Pull the latest oxidized_nms_manager.py (and requirements.txt) from GitHub
+    and restart the admin service. Only replaces this app's own source files -
+    never touches the Oxidized config, gems, or the oxidized.service itself."""
+    install_dir = Path(__file__).resolve().parent
+    clone_dir = tempfile.mkdtemp(prefix='oxidized-admin-update-')
+    try:
+        result = subprocess.run(
+            ['git', 'clone', '--depth', '1', APP_REPO_URL, clone_dir],
+            capture_output=True, text=True, timeout=60
+        )
+        if result.returncode != 0:
+            return jsonify({'status': 'error', 'message': 'git clone failed: ' + result.stderr.strip()}), 500
+
+        src_py = Path(clone_dir) / 'oxidized_nms_manager.py'
+        if not src_py.exists():
+            return jsonify({'status': 'error', 'message': 'oxidized_nms_manager.py not found in the cloned repo'}), 500
+        shutil.copy2(src_py, install_dir / 'oxidized_nms_manager.py')
+
+        src_req = Path(clone_dir) / 'requirements.txt'
+        if src_req.exists():
+            shutil.copy2(src_req, install_dir / 'requirements.txt')
+            pip_bin = install_dir / 'venv' / 'bin' / 'pip'
+            if pip_bin.exists():
+                subprocess.run([str(pip_bin), 'install', '-q', '-r', str(install_dir / 'requirements.txt')],
+                               capture_output=True, text=True, timeout=120)
+    except subprocess.TimeoutExpired:
+        return jsonify({'status': 'error', 'message': 'Update timed out'}), 500
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+    finally:
+        shutil.rmtree(clone_dir, ignore_errors=True)
+
+    log_audit('app_updated', 'oxidized_manager')
+
+    def _delayed_restart():
+        time.sleep(1)
+        subprocess.run(['sudo', 'systemctl', 'restart', 'oxidized-manager'])
+    threading.Thread(target=_delayed_restart, daemon=True).start()
+
+    return jsonify({'status': 'success', 'message': 'Updated from GitHub. Restarting the admin service now - reload this page in a few seconds.'})
 
 @app.route('/api/oxidized/restart', methods=['POST'])
 @requires_auth
@@ -2482,7 +2575,9 @@ CONFIG_MANAGEMENT_TEMPLATE = '''<!DOCTYPE html>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Config Management - Oxidized Manager</title>
     <style>''' + BASE_CSS + '''
-        textarea { height: 75vh; font-size: 13px; }
+        textarea { height: 60vh; font-size: 13px; }
+        .switch-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; }
+        .switch-row input { width: auto; }
     </style>
 </head>
 <body>
@@ -2491,15 +2586,110 @@ CONFIG_MANAGEMENT_TEMPLATE = '''<!DOCTYPE html>
 <main class="main"><div class="page-full">
     <div class="page-header">
         <h1>Oxidized Configuration</h1>
+        <div class="flex">
+            <button type="button" class="btn btn-outline btn-sm" id="restart-oxidized-btn" onclick="restartOxidized()"><i class="bi bi-arrow-clockwise"></i>Restart Oxidized Service</button>
+            <span id="restart-oxidized-result" style="font-size: 13px;"></span>
+        </div>
     </div>
 
-    <form method="POST">
-        <input type="hidden" name="action" value="update_yaml">
-        <textarea name="yaml_content" required class="mb-2">{{ config_yaml }}</textarea>
-        <button type="submit" class="btn"><i class="bi bi-check-lg"></i>Save Configuration</button>
-    </form>
+    <div class="card mb-2">
+        <div class="card-header"><div class="card-title"><i class="bi bi-toggles"></i> Quick Settings</div></div>
+        <div class="card-content">
+            <form method="POST">
+                <input type="hidden" name="action" value="update_quick_settings">
+                <div class="grid-2 mb-2">
+                    <div class="switch-row">
+                        <input type="checkbox" id="qs-debug" name="debug" {% if config.debug %}checked{% endif %}>
+                        <label for="qs-debug" style="margin: 0;">Debug logging</label>
+                    </div>
+                    <div class="switch-row">
+                        <input type="checkbox" id="qs-resolve-dns" name="resolve_dns" {% if config.resolve_dns %}checked{% endif %}>
+                        <label for="qs-resolve-dns" style="margin: 0;">Resolve DNS</label>
+                    </div>
+                    <div class="switch-row">
+                        <input type="checkbox" id="qs-run-once" name="run_once" {% if config.run_once %}checked{% endif %}>
+                        <label for="qs-run-once" style="margin: 0;">Run once (don't loop)</label>
+                    </div>
+                    <div class="switch-row">
+                        <input type="checkbox" id="qs-max-threads" name="use_max_threads" {% if config.use_max_threads %}checked{% endif %}>
+                        <label for="qs-max-threads" style="margin: 0;">Use max threads</label>
+                    </div>
+                    <div class="switch-row">
+                        <input type="checkbox" id="qs-next-adds" name="next_adds_job" {% if config.next_adds_job %}checked{% endif %}>
+                        <label for="qs-next-adds" style="margin: 0;">Queue newly added devices immediately</label>
+                    </div>
+                    <div class="switch-row">
+                        <input type="checkbox" id="qs-syslog" name="use_syslog" {% if config.use_syslog %}checked{% endif %}>
+                        <label for="qs-syslog" style="margin: 0;">Log to syslog</label>
+                    </div>
+                </div>
+                <div class="grid-2 mb-2">
+                    <div class="field">
+                        <label>Poll interval (seconds)</label>
+                        <input type="number" name="interval" min="1" value="{{ config.interval if config.interval is not none else 3600 }}">
+                    </div>
+                    <div class="field">
+                        <label>Threads</label>
+                        <input type="number" name="threads" min="1" value="{{ config.threads if config.threads is not none else 30 }}">
+                    </div>
+                    <div class="field">
+                        <label>Timeout (seconds)</label>
+                        <input type="number" name="timeout" min="1" value="{{ config.timeout if config.timeout is not none else 20 }}">
+                    </div>
+                    <div class="field">
+                        <label>Retries</label>
+                        <input type="number" name="retries" min="0" value="{{ config.retries if config.retries is not none else 3 }}">
+                    </div>
+                    <div class="field">
+                        <label>Time limit (seconds)</label>
+                        <input type="number" name="timelimit" min="1" value="{{ config.timelimit if config.timelimit is not none else 300 }}">
+                    </div>
+                </div>
+                <button type="submit" class="btn"><i class="bi bi-check-lg"></i>Save Quick Settings</button>
+            </form>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="card-header"><div class="card-title"><i class="bi bi-code-square"></i> Raw YAML (Advanced)</div></div>
+        <div class="card-content">
+            <form method="POST">
+                <input type="hidden" name="action" value="update_yaml">
+                <textarea name="yaml_content" required class="mb-2">{{ config_yaml }}</textarea>
+                <button type="submit" class="btn"><i class="bi bi-check-lg"></i>Save Configuration</button>
+            </form>
+        </div>
+    </div>
 </div></main>
 </div>
+
+<script>
+function restartOxidized() {
+    var btn = document.getElementById('restart-oxidized-btn');
+    var result = document.getElementById('restart-oxidized-result');
+    btn.disabled = true;
+    result.style.color = '#cbd5e1';
+    result.innerHTML = '<i class="bi bi-hourglass-split"></i> Restarting...';
+
+    fetch('{{ url_for("api_oxidized_restart") }}', { method: 'POST' })
+        .then(response => response.json().then(data => ({ ok: response.ok, data: data })))
+        .then(({ ok, data }) => {
+            if (ok && data.status === 'success') {
+                result.style.color = '#4ade80';
+                result.innerHTML = '<i class="bi bi-check-circle-fill"></i> ' + data.message;
+            } else {
+                result.style.color = '#f87171';
+                result.innerHTML = '<i class="bi bi-x-circle-fill"></i> ' + data.message;
+            }
+            btn.disabled = false;
+        })
+        .catch(err => {
+            result.style.color = '#f87171';
+            result.innerHTML = '<i class="bi bi-x-circle-fill"></i> ' + err;
+            btn.disabled = false;
+        });
+}
+</script>
 </body>
 </html>'''
 
@@ -2522,6 +2712,17 @@ SETTINGS_TEMPLATE = '''<!DOCTYPE html>
     {% else %}
     <div class="alert alert-danger">Oxidized API is not reachable. Please check your installation.</div>
     {% endif %}
+
+    <div class="card mb-2">
+        <div class="card-header"><div class="card-title"><i class="bi bi-cloud-arrow-down"></i> Admin Page</div></div>
+        <div class="card-content">
+            <div class="flex">
+                <button type="button" class="btn btn-outline btn-sm" id="update-app-btn" onclick="updateApp()"><i class="bi bi-cloud-arrow-down"></i>Update to Latest Version</button>
+                <span id="update-app-result" style="font-size: 13px;"></span>
+            </div>
+            <div class="help-text">Pulls the latest oxidized_nms_manager.py from GitHub and restarts this admin service. Does not touch the Oxidized config, gems, or device backups.</div>
+        </div>
+    </div>
 
     <div class="flex mb-2" style="flex-wrap: wrap;">
         <button type="button" class="btn btn-outline btn-sm" id="restart-oxidized-btn" onclick="restartOxidized()"><i class="bi bi-arrow-clockwise"></i>Restart Oxidized Service</button>
@@ -2598,6 +2799,34 @@ SETTINGS_TEMPLATE = '''<!DOCTYPE html>
 </div>
 
     <script>
+    function updateApp() {
+        if (!confirm('Pull the latest admin page code from GitHub and restart this service now?')) return;
+        var btn = document.getElementById('update-app-btn');
+        var result = document.getElementById('update-app-result');
+        btn.disabled = true;
+        result.style.color = '#cbd5e1';
+        result.innerHTML = '<i class="bi bi-hourglass-split"></i> Updating...';
+
+        fetch('{{ url_for("api_app_update") }}', { method: 'POST' })
+            .then(response => response.json().then(data => ({ ok: response.ok, data: data })))
+            .then(({ ok, data }) => {
+                if (ok && data.status === 'success') {
+                    result.style.color = '#4ade80';
+                    result.innerHTML = '<i class="bi bi-check-circle-fill"></i> ' + data.message;
+                    setTimeout(() => location.reload(), 4000);
+                } else {
+                    result.style.color = '#f87171';
+                    result.innerHTML = '<i class="bi bi-x-circle-fill"></i> ' + data.message;
+                    btn.disabled = false;
+                }
+            })
+            .catch(err => {
+                result.style.color = '#f87171';
+                result.innerHTML = '<i class="bi bi-x-circle-fill"></i> ' + err;
+                btn.disabled = false;
+            });
+    }
+
     function restartOxidized() {
         var btn = document.getElementById('restart-oxidized-btn');
         var result = document.getElementById('restart-oxidized-result');
