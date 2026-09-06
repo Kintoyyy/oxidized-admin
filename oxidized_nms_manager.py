@@ -2298,8 +2298,9 @@ DEVICE_DETAIL_TEMPLATE = '''<!DOCTYPE html>
     </div>
 
     <div class="tabs">
-        <button class="tab active" onclick="showTab('config')"><i class="bi bi-file-earmark-text"></i> Config</button>
-        <button class="tab" onclick="showTab('history')"><i class="bi bi-clock-history"></i> Versions</button>
+        <button class="tab active" data-tab="config" onclick="showTab('config')"><i class="bi bi-file-earmark-text"></i> Config</button>
+        <button class="tab" data-tab="history" onclick="showTab('history')"><i class="bi bi-clock-history"></i> Versions</button>
+        <button class="tab" data-tab="version-view" onclick="showTab('version-view')"><i class="bi bi-eye"></i> View Version</button>
     </div>
 
     <div id="config" class="tab-content active">
@@ -2365,11 +2366,15 @@ DEVICE_DETAIL_TEMPLATE = '''<!DOCTYPE html>
                 </tbody>
             </table>
         </div>
-        <div class="code-viewer" id="version-content"></div>
-        <div id="version-content-actions" class="flex" style="display: none; margin-top: 0.5rem;">
+    </div>
+
+    <div id="version-view" class="tab-content">
+        <div id="version-view-empty" class="muted">Click "View" on a version in the Versions tab to see it here.</div>
+        <div id="version-content-actions" class="flex mb-2" style="display: none;">
             <button class="btn btn-outline btn-sm" onclick="rawView('version-content', '{{ device_name }}-version.conf')"><i class="bi bi-code-slash"></i>Raw</button>
             <button class="btn btn-outline btn-sm" onclick="downloadContent('version-content', '{{ device_name }}-version.conf')"><i class="bi bi-download"></i>Download</button>
         </div>
+        <div class="code-viewer" id="version-content"></div>
     </div>
 
 </div></main>
@@ -2380,7 +2385,8 @@ DEVICE_DETAIL_TEMPLATE = '''<!DOCTYPE html>
         document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
         document.querySelectorAll('.tab').forEach(el => el.classList.remove('active'));
         document.getElementById(tabName).classList.add('active');
-        event.target.classList.add('active');
+        var btn = document.querySelector('.tab[data-tab="' + tabName + '"]');
+        if (btn) btn.classList.add('active');
     }
 
     function updateConfig() {
@@ -2420,9 +2426,11 @@ DEVICE_DETAIL_TEMPLATE = '''<!DOCTYPE html>
     }
 
     function viewVersion(v) {
-        document.getElementById('diff-content').style.display = 'none';
+        showTab('version-view');
+        var empty = document.getElementById('version-view-empty');
         var out = document.getElementById('version-content');
         var actions = document.getElementById('version-content-actions');
+        empty.style.display = 'none';
         out.style.display = 'block';
         out.textContent = 'Loading...';
         actions.style.display = 'none';
@@ -2431,7 +2439,7 @@ DEVICE_DETAIL_TEMPLATE = '''<!DOCTYPE html>
             .then(response => response.json())
             .then(data => {
                 out.textContent = data.status === 'success' ? data.content : ('Error: ' + data.message);
-                if (data.status === 'success') actions.style.display = 'block';
+                if (data.status === 'success') actions.style.display = 'flex';
             })
             .catch(err => { out.textContent = 'Request failed: ' + err; });
     }
@@ -2530,9 +2538,6 @@ DEVICE_DETAIL_TEMPLATE = '''<!DOCTYPE html>
         if (a.value === '' || b.value === '') return;
         var idxA = parseInt(a.value, 10), idxB = parseInt(b.value, 10);
         var vA = HISTORY[idxA], vB = HISTORY[idxB];
-
-        document.getElementById('version-content').style.display = 'none';
-        document.getElementById('version-content-actions').style.display = 'none';
 
         var out = document.getElementById('diff-content');
         out.style.display = 'block';
