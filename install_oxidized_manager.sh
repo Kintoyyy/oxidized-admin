@@ -57,6 +57,10 @@ fi
 OS_VERSION=$(lsb_release -rs)
 info "Detected: Ubuntu/Debian $OS_VERSION"
 
+SERVER_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
+SERVER_IP=${SERVER_IP:-127.0.0.1}
+info "Detected server IP: $SERVER_IP"
+
 # ============================================================================
 # USER INPUT
 # ============================================================================
@@ -69,8 +73,7 @@ INSTALL_DIR=${INSTALL_DIR:-/home/oxidized/oxidized-manager}
 read -p "Enter Oxidized config directory (default: /home/oxidized/.config/oxidized): " CONFIG_DIR
 CONFIG_DIR=${CONFIG_DIR:-/home/oxidized/.config/oxidized}
 
-read -p "Enter application port (default: 5000): " APP_PORT
-APP_PORT=${APP_PORT:-5000}
+APP_PORT=5000
 
 read -p "Enter admin username (default: admin): " ADMIN_USERNAME
 ADMIN_USERNAME=${ADMIN_USERNAME:-admin}
@@ -88,7 +91,7 @@ ADMIN_EMAIL=${ADMIN_EMAIL:-admin@localhost}
 
 info "Admin page install directory: $INSTALL_DIR"
 info "Oxidized config directory:    $CONFIG_DIR"
-info "Application port:             $APP_PORT"
+info "Application port:             $APP_PORT (internal; reachable via Nginx on port 80)"
 info "Admin username:                $ADMIN_USERNAME"
 
 # ============================================================================
@@ -237,7 +240,7 @@ if [ ! -f "$CONFIG_DIR/config" ]; then
 username: admin
 password: password
 log: $CONFIG_DIR/logs/oxidized.log
-rest: 0.0.0.0:8888
+rest: 127.0.0.1:8888
 resolve_dns: false
 interval: 3600
 use_syslog: false
@@ -357,58 +360,165 @@ EOF
 fi
 
 # ============================================================================
-# SECURE OXIDIZED WEB GUI (OPTIONAL NGINX REVERSE PROXY + BASIC AUTH)
+# LIBRENMS DIRECT REST ACCESS
 # ============================================================================
 
-section "Secure Oxidized Web GUI"
+section "LibreNMS Direct REST Access"
 
-NGINX_PROXY_ENABLED=false
+info "This is separate from the LibreNMS sync toggle in the admin page's own"
+info "Settings page -- it's for LibreNMS's own built-in Oxidized widget, which"
+info "connects to Oxidized's REST API directly from the LibreNMS host."
 
-read -p "Put the Oxidized web GUI (port 8888) behind an Nginx reverse proxy with password protection? [y/N]: " SETUP_NGINX
-if [[ "$SETUP_NGINX" =~ ^[Yy] ]]; then
-    NGINX_PROXY_ENABLED=true
+LIBRENMS_NEEDS_REST=false
+LIBRENMS_IP=""
 
-    info "Installing Nginx and Apache utils..."
-    apt install nginx apache2-utils -y
+read -p "Does LibreNMS need direct network access to Oxidized's REST API (port 8888)? [y/N]: " LIBRENMS_REST_ACCESS
+if [[ "$LIBRENMS_REST_ACCESS" =~ ^[Yy] ]]; then
+    LIBRENMS_NEEDS_REST=true
+    read -p "Enter the LibreNMS server's IP address (blank = allow from any host): " LIBRENMS_IP
+fi
 
-    read -p "Enter a username for the Oxidized web GUI (default: oxidized): " PROXY_USER
-    PROXY_USER=${PROXY_USER:-oxidized}
+# ============================================================================
+# RESTRICT/BIND OXIDIZED'S REST/WEB INTERFACE
+# ============================================================================
 
-    read -s -p "Enter a password for '$PROXY_USER': " PROXY_PASS
-    echo
-    while [ ${#PROXY_PASS} -lt 6 ]; do
-        warn "Password must be at least 6 characters"
-        read -s -p "Enter a password for '$PROXY_USER': " PROXY_PASS
-        echo
-    done
+if [ "$LIBRENMS_NEEDS_REST" = true ]; then
+    section "Binding Oxidized for LibreNMS Access"
+    REST_BIND_ADDR="$SERVER_IP"
+    info "Oxidized's REST/web interface will be reachable at $SERVER_IP:8888 for LibreNMS."
+else
+    section "Restricting Oxidized to Localhost"
+    REST_BIND_ADDR="127.0.0.1"
+    info "The admin page always talks to Oxidized over localhost, so its REST/web"
+    info "interface never needs to be reachable from outside this host directly."
+fi
 
-    info "Creating password file..."
-    echo "$PROXY_PASS" | htpasswd -ci /etc/nginx/.htpasswd "$PROXY_USER"
+if [ -f "$CONFIG_DIR/config" ]; then
+    # Oxidized's core (lib/oxidized/core.rb) checks for a top-level "rest:"
+    # key FIRST -- if present at all, it is used verbatim as the bind
+    # address/port and "extensions.oxidized-web.host"/"port" are ignored
+    # entirely (that extension only reads a "listen" key, never "host", so
+    # a "host:" key there is always a silent no-op). So "rest:" is the only
+    # thing that actually needs to change here.
+    if grep -q '^rest:' "$CONFIG_DIR/config"; then
+        sed -i -E "s/^rest:.*/rest: $REST_BIND_ADDR:8888/" "$CONFIG_DIR/config"
+    elif grep -qE '^\s*oxidized-web:\s*$' "$CONFIG_DIR/config"; then
+        if grep -qE '^\s*listen:' "$CONFIG_DIR/config"; then
+            sed -i -E "s/^(\s*)listen:.*/\1listen: $REST_BIND_ADDR/" "$CONFIG_DIR/config"
+        else
+            sed -i -E "/^\s*oxidized-web:\s*\$/a\\    listen: $REST_BIND_ADDR" "$CONFIG_DIR/config"
+        fi
+    else
+        echo "rest: $REST_BIND_ADDR:8888" >> "$CONFIG_DIR/config"
+    fi
 
-    info "Writing Nginx reverse proxy config..."
-    cat > /etc/nginx/sites-available/oxidized << 'EOF'
+    if systemctl list-unit-files oxidized.service &> /dev/null; then
+        systemctl restart oxidized.service
+        sleep 2
+        info "Verifying Oxidized's bind address..."
+        if (ss -tlnp 2>/dev/null || netstat -tlnp 2>/dev/null) | grep ":8888" | grep -qE '0\.0\.0\.0|\*:8888|:::8888'; then
+            warn "Oxidized is listening on ALL interfaces (0.0.0.0:8888) instead of just $REST_BIND_ADDR."
+            warn "It may have been re-saved with a different bind address afterwards (e.g. via the admin page's Config editor)."
+            warn "Check: grep -E 'rest:|listen:' $CONFIG_DIR/config"
+        else
+            info "✓ Oxidized's REST/web interface is bound to $REST_BIND_ADDR:8888"
+        fi
+    else
+        warn "oxidized.service not found; restart Oxidized manually for this change to take effect."
+    fi
+else
+    warn "$CONFIG_DIR/config not found; skipping bind-address configuration."
+fi
+
+# ============================================================================
+# NGINX REVERSE PROXY
+# ============================================================================
+
+section "Nginx Reverse Proxy"
+
+NGINX_ADMIN_ENABLED=false
+NGINX_OXIDIZED_EXPOSED=false
+
+read -p "Set up Nginx as a reverse proxy for the admin page on port 80? [Y/n]: " SETUP_NGINX_ADMIN
+SETUP_NGINX_ADMIN=${SETUP_NGINX_ADMIN:-y}
+if [[ "$SETUP_NGINX_ADMIN" =~ ^[Yy] ]]; then
+    NGINX_ADMIN_ENABLED=true
+
+    info "Installing Nginx..."
+    apt install nginx -y
+
+    info "Writing Nginx config for the admin page (port 80 -> 127.0.0.1:$APP_PORT)..."
+    cat > /etc/nginx/sites-available/oxidized-admin << EOF
 server {
     listen 80;
+    server_name _;
+
+    location / {
+        proxy_pass http://127.0.0.1:$APP_PORT;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+}
+EOF
+
+    ln -sf /etc/nginx/sites-available/oxidized-admin /etc/nginx/sites-enabled/oxidized-admin
+
+    if [ -f /etc/nginx/sites-enabled/default ]; then
+        rm -f /etc/nginx/sites-enabled/default
+        info "Removed default Nginx site"
+    fi
+
+    if [ "$LIBRENMS_NEEDS_REST" = true ]; then
+        info "Skipping Nginx exposure for the Oxidized web GUI -- port 8888 on $SERVER_IP is already bound directly for LibreNMS's REST access."
+        SETUP_NGINX_OXIDIZED="n"
+    else
+        read -p "Also expose the Oxidized web GUI externally, on port 8888, password protected? [y/N]: " SETUP_NGINX_OXIDIZED
+    fi
+    if [[ "$SETUP_NGINX_OXIDIZED" =~ ^[Yy] ]]; then
+        NGINX_OXIDIZED_EXPOSED=true
+
+        info "Installing Apache utils (for htpasswd)..."
+        apt install apache2-utils -y
+
+        read -p "Enter a username for the Oxidized web GUI (default: oxidized): " PROXY_USER
+        PROXY_USER=${PROXY_USER:-oxidized}
+
+        read -s -p "Enter a password for '$PROXY_USER': " PROXY_PASS
+        echo
+        while [ ${#PROXY_PASS} -lt 6 ]; do
+            warn "Password must be at least 6 characters"
+            read -s -p "Enter a password for '$PROXY_USER': " PROXY_PASS
+            echo
+        done
+
+        info "Creating password file..."
+        echo "$PROXY_PASS" | htpasswd -ci /etc/nginx/.htpasswd "$PROXY_USER"
+
+        info "Writing Nginx config for the Oxidized web GUI (port 8888 on $SERVER_IP)..."
+        # Oxidized itself is bound to 127.0.0.1:8888 (see above), so Nginx can
+        # bind that same port number on the host's own IP without a conflict --
+        # a wildcard "listen 8888;" would instead clash with that loopback bind.
+        cat > /etc/nginx/sites-available/oxidized-web << EOF
+server {
+    listen $SERVER_IP:8888;
     server_name _;
 
     location / {
         auth_basic "Oxidized Access";
         auth_basic_user_file /etc/nginx/.htpasswd;
 
-        proxy_pass http://localhost:8888;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_pass http://127.0.0.1:8888;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
     }
 }
 EOF
 
-    ln -sf /etc/nginx/sites-available/oxidized /etc/nginx/sites-enabled/oxidized
-
-    if [ -f /etc/nginx/sites-enabled/default ]; then
-        rm -f /etc/nginx/sites-enabled/default
-        info "Removed default Nginx site"
+        ln -sf /etc/nginx/sites-available/oxidized-web /etc/nginx/sites-enabled/oxidized-web
     fi
 
     info "Testing Nginx configuration..."
@@ -416,39 +526,12 @@ EOF
 
     systemctl restart nginx
     systemctl enable nginx
-    info "✓ Nginx reverse proxy configured on port 80"
-
-    info "Restricting Oxidized to listen on localhost only..."
-    # Oxidized's core (lib/oxidized/core.rb) checks for a top-level "rest:"
-    # key FIRST -- if present at all, it is used verbatim as the bind
-    # address/port and "extensions.oxidized-web.host"/"port" are ignored
-    # entirely (that extension only reads a "listen" key, never "host", so
-    # setting "host: 0.0.0.0 -> localhost" there is a silent no-op). So the
-    # "rest:" key is the only thing that actually needs to change.
-    if grep -q '^rest:' "$CONFIG_DIR/config"; then
-        sed -i -E 's/^rest:.*/rest: localhost:8888/' "$CONFIG_DIR/config"
-    elif grep -qE '^\s*oxidized-web:\s*$' "$CONFIG_DIR/config"; then
-        if grep -qE '^\s*listen:' "$CONFIG_DIR/config"; then
-            sed -i -E 's/^(\s*)listen:.*/\1listen: 127.0.0.1/' "$CONFIG_DIR/config"
-        else
-            sed -i -E '/^\s*oxidized-web:\s*$/a\    listen: 127.0.0.1' "$CONFIG_DIR/config"
-        fi
-    else
-        echo 'rest: localhost:8888' >> "$CONFIG_DIR/config"
-    fi
-    systemctl restart oxidized.service
-    sleep 2
-
-    info "Verifying Oxidized is no longer publicly reachable on port 8888..."
-    if (ss -tlnp 2>/dev/null || netstat -tlnp 2>/dev/null) | grep ":8888" | grep -qE '0\.0\.0\.0|\*:8888|:::8888'; then
-        warn "Oxidized still appears to be listening on ALL interfaces (0.0.0.0:8888), not just localhost."
-        warn "It may have been re-saved with a public bind address afterwards (e.g. via the admin page's Config editor)."
-        warn "Check: grep -E 'rest:|listen:' $CONFIG_DIR/config"
-    else
-        info "✓ Oxidized is bound to localhost only; only reachable via the Nginx proxy (http://<host>/, user: $PROXY_USER)"
+    info "✓ Nginx configured: port 80 -> admin page"
+    if [ "$NGINX_OXIDIZED_EXPOSED" = true ]; then
+        info "✓ Oxidized web GUI exposed at http://$SERVER_IP:8888/ (user: $PROXY_USER)"
     fi
 else
-    info "Skipping Nginx setup. Oxidized web GUI stays reachable directly on port 8888."
+    info "Skipping Nginx setup. Admin page stays reachable directly on port $APP_PORT."
 fi
 
 # ============================================================================
@@ -602,15 +685,26 @@ section "Firewall Configuration"
 if ufw status | grep -q "Status: active"; then
     info "UFW is active. Adding firewall rules..."
     ufw allow "$APP_PORT/tcp"
-    if [ "$NGINX_PROXY_ENABLED" = true ]; then
+    RULES_ADDED="$APP_PORT (admin page, direct)"
+    if [ "$NGINX_ADMIN_ENABLED" = true ]; then
         ufw allow 80/tcp
-        info "✓ Firewall rules added for $APP_PORT (admin page) and 80 (Oxidized web GUI via Nginx)"
-    else
-        ufw allow 8888/tcp
-        info "✓ Firewall rules added for $APP_PORT (admin page) and 8888 (Oxidized web GUI)"
+        RULES_ADDED="$RULES_ADDED, 80 (admin page via Nginx)"
     fi
+    if [ "$NGINX_OXIDIZED_EXPOSED" = true ]; then
+        ufw allow 8888/tcp
+        RULES_ADDED="$RULES_ADDED, 8888 (Oxidized web GUI via Nginx)"
+    elif [ "$LIBRENMS_NEEDS_REST" = true ]; then
+        if [ -n "$LIBRENMS_IP" ]; then
+            ufw allow from "$LIBRENMS_IP" to any port 8888 proto tcp
+            RULES_ADDED="$RULES_ADDED, 8888 from $LIBRENMS_IP only (LibreNMS REST access)"
+        else
+            ufw allow 8888/tcp
+            RULES_ADDED="$RULES_ADDED, 8888 open to any host (LibreNMS REST access)"
+        fi
+    fi
+    info "✓ Firewall rules added: $RULES_ADDED"
 else
-    warn "UFW is not active. You may need to manually allow port $APP_PORT (and 80, or 8888 if not using Nginx)"
+    warn "UFW is not active. You may need to manually allow port $APP_PORT (and 80 if using Nginx)"
 fi
 
 # ============================================================================
@@ -646,7 +740,12 @@ echo "╔═══════════════════════�
 echo "║         Oxidized + LibreNMS Manager Successfully Installed     ║"
 echo "╚════════════════════════════════════════════════════════════════╝"
 echo ""
-echo "Web Interface: http://localhost:$APP_PORT"
+if [ "$NGINX_ADMIN_ENABLED" = true ]; then
+echo "Web Interface: http://$SERVER_IP/  (via Nginx, port 80)"
+echo "                http://$SERVER_IP:$APP_PORT/  (direct)"
+else
+echo "Web Interface: http://$SERVER_IP:$APP_PORT/"
+fi
 echo ""
 echo "Login:"
 echo "  Username: $ADMIN_USERNAME"
@@ -664,17 +763,26 @@ echo "  Admin page - Logs:   sudo journalctl -u oxidized-manager -f"
 echo "  Oxidized   - Start:  sudo systemctl start oxidized"
 echo "  Oxidized   - Logs:   sudo journalctl -u oxidized -f"
 echo ""
-if [ "$NGINX_PROXY_ENABLED" = true ]; then
+if [ "$NGINX_OXIDIZED_EXPOSED" = true ]; then
 echo "Oxidized Web GUI (behind Nginx, password protected):"
-echo "  URL:      http://<this-host>/"
+echo "  URL:      http://$SERVER_IP:8888/"
 echo "  Username: $PROXY_USER"
 echo ""
+elif [ "$LIBRENMS_NEEDS_REST" = true ]; then
+echo "Oxidized REST API (for LibreNMS's built-in widget, unauthenticated):"
+echo "  URL:      http://$SERVER_IP:8888/"
+if [ -n "$LIBRENMS_IP" ]; then
+echo "  Allowed:  $LIBRENMS_IP only"
 else
-echo "Oxidized Web GUI: http://localhost:8888 (not password protected)"
+echo "  Allowed:  any host (no IP restriction set)"
+fi
+echo ""
+else
+echo "Oxidized Web GUI: not publicly exposed (bound to 127.0.0.1:8888, used internally by the admin page)"
 echo ""
 fi
 echo "Quick Setup Next Steps:"
-echo "  1. Open http://localhost:$APP_PORT in your browser"
+echo "  1. Open the Web Interface URL above in your browser"
 echo "  2. Log in with your admin credentials"
 echo "  3. Go to Settings → configure LibreNMS API (optional)"
 echo "  4. Add devices via Devices tab or sync from LibreNMS"

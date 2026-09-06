@@ -36,17 +36,17 @@ Or, without cloning first:
 sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/Kintoyyy/oxidized-admin/refs/heads/main/install_oxidized_manager.sh)"
 ```
 
-You'll be prompted for the admin page install directory, Oxidized config directory, port, and admin username/password/email. The script then:
+You'll be prompted for the admin page install directory, Oxidized config directory, and admin username/password/email (the admin page always runs on port 5000 internally). The script then:
 
 1. Detects any existing Oxidized install — you can **skip** it (leave as-is), **nuke** it (reinstall the gems fresh, keeping existing backups/config), or cancel.
 2. If installing, creates the `oxidized` system user, grants it passwordless sudo, installs build dependencies, and installs the `oxidized`/`oxidized-web`/`oxidized-script` gems.
-3. Sets up an `oxidized.service` systemd unit running as that user (web GUI/API on port 8888).
-4. Optionally puts an Nginx reverse proxy with basic-auth password protection in front of the Oxidized web GUI (see [Securing the Oxidized Web GUI](#securing-the-oxidized-web-gui)).
+3. Sets up an `oxidized.service` systemd unit running as that user, and restricts Oxidized's REST/web interface (port 8888) to `127.0.0.1` — the admin page always talks to it over localhost, so it's never exposed by default (see [Securing the Oxidized Web GUI](#securing-the-oxidized-web-gui) to expose it deliberately).
+4. Optionally installs Nginx as a reverse proxy for the **admin page** on port 80 (recommended — lets you reach it at `http://<host>/` instead of `http://<host>:5000`), and separately offers to expose the Oxidized web GUI itself on port 8888, either behind Nginx with basic auth for browser access, or bound directly for LibreNMS's built-in Oxidized widget (which talks to Oxidized's REST API directly and doesn't support basic auth).
 5. Always does a fresh `git clone` of this repo and overwrites the admin page files (`oxidized_nms_manager.py`, `requirements.txt`, any `.html` templates) in the install directory, initializes the database, and sets up the `oxidized-manager.service` systemd unit.
 
 That last step means **re-running the installer is also how you update the admin page** — it always pulls the latest code from git and replaces what's deployed, regardless of local edits. The Oxidized config file itself is left alone unless you choose "Nuke".
 
-Open `http://localhost:5000` and log in with the admin credentials you set.
+Open `http://<host>/` (or `http://<host>:5000` if you skipped the Nginx step) and log in with the admin credentials you set.
 
 ### Manual install
 
@@ -109,22 +109,33 @@ sudo journalctl -u oxidized -f
 
 ### Securing the Oxidized Web GUI
 
-Oxidized's own web GUI/API (port 8888) has no authentication by default. The installer can front it with an Nginx reverse proxy + basic auth — say yes when prompted, or set it up manually afterwards:
+By default the installer binds Oxidized's own web GUI/API (port 8888) to `127.0.0.1` — it's never reachable from outside the host, since the admin page always talks to it over localhost. Port 80 is reserved for the admin page itself (via Nginx).
+
+If you need Oxidized's web GUI reachable from elsewhere, the installer offers two mutually-exclusive options when you re-run it:
+
+- **Browser access, password-protected** — exposes it on port 8888 behind Nginx + basic auth, bound to the server's own IP (not `0.0.0.0`, so it doesn't collide with Oxidized's own loopback bind on the same port number).
+- **LibreNMS direct access** — LibreNMS's built-in Oxidized widget talks to the REST API directly and doesn't support basic auth, so instead this binds Oxidized's REST interface straight to the server's IP on port 8888 (no Nginx/auth in front), optionally scoped to just the LibreNMS host's IP via a UFW rule.
+
+To do either by hand instead of re-running the installer:
 
 ```bash
+# Bind Oxidized to the server's IP instead of localhost
+sudo sed -i -E "s/^rest:.*/rest: <server-ip>:8888/" /home/oxidized/.config/oxidized/config
+sudo systemctl restart oxidized.service
+
+# Option A: put Nginx + basic auth in front of it
 sudo apt install nginx apache2-utils -y
 sudo htpasswd -c /etc/nginx/.htpasswd oxidized   # -c only on the first user
-
-sudo tee /etc/nginx/sites-available/oxidized > /dev/null << 'EOF'
+sudo tee /etc/nginx/sites-available/oxidized-web > /dev/null << 'EOF'
 server {
-    listen 80;
+    listen <server-ip>:8888;
     server_name _;
 
     location / {
         auth_basic "Oxidized Access";
         auth_basic_user_file /etc/nginx/.htpasswd;
 
-        proxy_pass http://localhost:8888;
+        proxy_pass http://127.0.0.1:8888;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -132,20 +143,12 @@ server {
     }
 }
 EOF
+sudo ln -sf /etc/nginx/sites-available/oxidized-web /etc/nginx/sites-enabled/oxidized-web
+sudo nginx -t && sudo systemctl restart nginx
 
-sudo ln -sf /etc/nginx/sites-available/oxidized /etc/nginx/sites-enabled/oxidized
-sudo rm -f /etc/nginx/sites-enabled/default
-sudo nginx -t && sudo systemctl restart nginx && sudo systemctl enable nginx
+# Option B: scope raw access to just the LibreNMS host via UFW instead
+sudo ufw allow from <librenms-ip> to any port 8888 proto tcp
 ```
-
-Then restrict Oxidized to localhost so it's only reachable through the proxy:
-
-```bash
-sudo sed -i 's/^rest:.*/rest: localhost:8888/' /home/oxidized/.config/oxidized/config
-sudo systemctl restart oxidized.service
-```
-
-Access it at `http://<host>/` — you'll be prompted for the username/password you set with `htpasswd`.
 
 ## Troubleshooting
 
