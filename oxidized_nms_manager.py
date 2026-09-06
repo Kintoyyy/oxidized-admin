@@ -2351,7 +2351,7 @@ DEVICE_MANAGEMENT_TEMPLATE = '''<!DOCTYPE html>
 <body>
 <div class="shell">
 ''' + render_sidebar('manage_devices') + '''
-<main class="main"><div class="page">
+<main class="main"><div class="page-full">
     <div class="page-header">
         <h1>Device Management</h1>
         <div class="flex">
@@ -2439,6 +2439,7 @@ DEVICE_MANAGEMENT_TEMPLATE = '''<!DOCTYPE html>
                     <td><span class="badge">{{ device.group }}</span></td>
                     <td>{{ device.get('ssh_port', 22) }}</td>
                     <td>
+                        <a class="btn btn-outline btn-sm" href="{{ url_for('device_detail', device_name=device.name) }}"><i class="bi bi-file-earmark-code"></i>Config</a>
                         <button class="btn btn-outline btn-sm" onclick="testSSH('{{ device.name }}', '{{ device.ip }}', '{{ device.username }}', '{{ device.password }}', {{ device.get('ssh_port', 22) }})"><i class="bi bi-plug"></i>Test SSH</button>
                         <button class="btn btn-outline btn-sm" onclick='editDevice({{ device|tojson }})'><i class="bi bi-pencil"></i>Edit</button>
                         <form method="POST" style="display: inline;">
