@@ -16,6 +16,7 @@ import sys
 import tempfile
 import threading
 import time
+from collections import deque
 from datetime import datetime, timedelta, timezone
 from functools import wraps
 from pathlib import Path
@@ -59,6 +60,7 @@ BACKUP_DIR.mkdir(parents=True, exist_ok=True)
 OXIDIZED_CONFIG_PATH = CONFIG_DIR / 'config'
 OXIDIZED_ROUTER_DB = CONFIG_DIR / 'router.db'
 OXIDIZED_BACKUPS = CONFIG_DIR / 'repositories.default'
+OXIDIZED_LOG_PATH = CONFIG_DIR / 'logs' / 'oxidized.log'
 
 # ============================================================================
 # OXIDIZED SUPPORTED MODELS
@@ -745,6 +747,17 @@ def write_oxidized_config(config):
     except Exception as e:
         print(f'Error writing config: {e}')
         return False
+
+def tail_log_file(path, max_lines=400):
+    """Return the last max_lines lines of a text log file (memory-bounded to
+    max_lines regardless of the file's total size)."""
+    try:
+        with open(path, 'r', errors='replace') as f:
+            return list(deque(f, maxlen=max_lines))
+    except FileNotFoundError:
+        return []
+    except Exception as e:
+        return [f'Error reading log file: {e}\n']
 
 def read_router_db():
     """Read router.db CSV."""
@@ -1448,6 +1461,21 @@ def manage_config():
     config_yaml = yaml.dump(config, default_flow_style=False)
     return render_template_string(CONFIG_MANAGEMENT_TEMPLATE, config=config, config_yaml=config_yaml)
 
+@app.route('/logs')
+@requires_auth
+@requires_admin
+def view_logs():
+    """Live(ish) tail of the Oxidized log file."""
+    return render_template_string(LOGS_TEMPLATE, log_path=str(OXIDIZED_LOG_PATH))
+
+@app.route('/api/logs/tail')
+@requires_auth
+@requires_admin
+def api_logs_tail():
+    """Return the last N lines of the Oxidized log file, for the Logs page to poll."""
+    lines = tail_log_file(OXIDIZED_LOG_PATH, max_lines=500)
+    return jsonify({'status': 'success', 'lines': lines, 'path': str(OXIDIZED_LOG_PATH)})
+
 APP_REPO_URL = 'https://github.com/Kintoyyy/oxidized-admin.git'
 
 @app.route('/api/app/update', methods=['POST'])
@@ -1745,6 +1773,7 @@ code, pre { font-family: var(--font-mono); }
 .sidebar nav a i, .sidebar .bottom a i { font-size: 15px; width: 16px; text-align: center; }
 .sidebar .brand { display: flex; align-items: center; gap: 8px; }
 .sidebar .bottom a:hover { background: var(--accent); color: var(--foreground); }
+.brand-logo { color: #60a5fa; flex-shrink: 0; }
 
 .main { flex: 1; min-width: 0; }
 .page { max-width: 1280px; margin: 0 auto; padding: 1.5rem; }
@@ -1780,6 +1809,8 @@ input:focus, select:focus, textarea:focus {
 label { display: block; font-size: 12px; font-weight: 500; color: var(--muted-foreground); margin-bottom: 4px; }
 .field { margin-bottom: 0.85rem; }
 .help-text { color: var(--muted-foreground); font-size: 12px; margin-top: 4px; }
+.switch-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; }
+.switch-row input { width: auto; }
 
 .card { background: var(--card); border: 1px solid var(--border); border-radius: calc(var(--radius) + 2px); }
 .card-header { padding: 1rem 1.25rem; border-bottom: 1px solid var(--border); }
@@ -1860,6 +1891,20 @@ table.table tbody tr:hover td { background: var(--accent); }
 .auth-logo { display: flex; align-items: center; justify-content: center; gap: 8px; margin-bottom: 1.5rem; font-size: 15px; font-weight: 600; color: var(--muted-foreground); }
 '''
 
+# Simple inline logo mark (a hub with three connected nodes) - no external image
+# file needed, scales cleanly, and uses currentColor so it always matches
+# whatever text color it's placed next to.
+LOGO_SVG = (
+    '<svg class="brand-logo" width="20" height="20" viewBox="0 0 24 24" fill="none" '
+    'xmlns="http://www.w3.org/2000/svg" aria-hidden="true">'
+    '<circle cx="12" cy="5" r="2.6" fill="currentColor"/>'
+    '<circle cx="5" cy="18.5" r="2.6" fill="currentColor"/>'
+    '<circle cx="19" cy="18.5" r="2.6" fill="currentColor"/>'
+    '<path d="M12 7.6V12M12 12L5.8 16.2M12 12L18.2 16.2" stroke="currentColor" '
+    'stroke-width="1.7" stroke-linecap="round"/>'
+    '</svg>'
+)
+
 def render_sidebar(active):
     """Left sidebar shared across all authenticated pages, with the current section highlighted."""
     def link(endpoint, icon, label):
@@ -1870,11 +1915,12 @@ def render_sidebar(active):
         link('dashboard', 'bi-speedometer2', 'Dashboard') +
         link('manage_devices', 'bi-hdd-network', 'Devices') +
         link('manage_config', 'bi-file-earmark-code', 'Config') +
+        link('view_logs', 'bi-terminal', 'Logs') +
         link('settings', 'bi-sliders', 'Settings') +
         link('manage_users', 'bi-people', 'Users')
     )
     return ('''<aside class="sidebar">
-        <a class="brand" href="{{ url_for('dashboard') }}"><i class="bi bi-diagram-3"></i>Oxidized Manager</a>
+        <a class="brand" href="{{ url_for('dashboard') }}">''' + LOGO_SVG + '''Oxidized Manager</a>
         <nav>''' + links + '''</nav>
         <div class="bottom"><a href="{{ url_for('logout') }}"><i class="bi bi-box-arrow-right"></i>Logout</a></div>
     </aside>
@@ -1892,7 +1938,7 @@ LOGIN_TEMPLATE = '''<!DOCTYPE html>
 <div class="auth-shell">
     <div class="auth-card card">
         <div class="card-content">
-            <div class="auth-logo"><i class="bi bi-diagram-3"></i>Oxidized Manager</div>
+            <div class="auth-logo">''' + LOGO_SVG + '''Oxidized Manager</div>
 
             {% with messages = get_flashed_messages(category_filter=['danger']) %}
                 {% if messages %}
@@ -1929,6 +1975,7 @@ SETUP_TEMPLATE = '''<!DOCTYPE html>
 <div class="auth-shell">
     <div class="auth-card card" style="max-width: 440px;">
         <div class="card-content">
+            <div class="auth-logo">''' + LOGO_SVG + '''Oxidized Manager</div>
             <h1 style="margin-bottom: 0.35rem;">Initial Setup</h1>
             <p class="muted" style="font-size: 13px; margin-bottom: 1.5rem;">Create your admin account to get started</p>
 
@@ -2739,8 +2786,6 @@ CONFIG_MANAGEMENT_TEMPLATE = '''<!DOCTYPE html>
     <title>Config Management - Oxidized Manager</title>
     <style>''' + BASE_CSS + '''
         textarea { height: 60vh; font-size: 13px; }
-        .switch-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; }
-        .switch-row input { width: auto; }
     </style>
 </head>
 <body>
@@ -2852,6 +2897,100 @@ function restartOxidized() {
             btn.disabled = false;
         });
 }
+</script>
+</body>
+</html>'''
+
+LOGS_TEMPLATE = '''<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Logs - Oxidized Manager</title>
+    <style>''' + BASE_CSS + '''
+        #log-viewer {
+            height: calc(100vh - 200px);
+            max-height: none;
+            font-size: 12px;
+            line-height: 1.5;
+        }
+    </style>
+</head>
+<body>
+<div class="shell">
+''' + render_sidebar('view_logs') + '''
+<main class="main"><div class="page-full">
+    <div class="page-header">
+        <div>
+            <h1 style="margin-bottom: 0.15rem;">Oxidized Logs</h1>
+            <div class="muted" style="font-size: 12px;">{{ log_path }}</div>
+        </div>
+        <div class="flex">
+            <div class="switch-row" style="padding: 0;">
+                <input type="checkbox" id="auto-refresh" checked>
+                <label for="auto-refresh" style="margin: 0;">Auto-refresh</label>
+            </div>
+            <button type="button" class="btn btn-outline btn-sm" onclick="fetchLogs()"><i class="bi bi-arrow-clockwise"></i>Refresh</button>
+            <button type="button" class="btn btn-outline btn-sm" onclick="downloadContent('log-viewer', 'oxidized.log')"><i class="bi bi-download"></i>Download</button>
+            <button type="button" class="btn btn-outline btn-sm" onclick="clearView()"><i class="bi bi-x-lg"></i>Clear view</button>
+        </div>
+    </div>
+
+    <div class="code-viewer" id="log-viewer">Loading...</div>
+</div></main>
+</div>
+
+<script>
+var pollTimer = null;
+
+function isNearBottom(el) {
+    return el.scrollTop + el.clientHeight >= el.scrollHeight - 60;
+}
+
+function fetchLogs() {
+    var viewer = document.getElementById('log-viewer');
+    var stickToBottom = isNearBottom(viewer);
+
+    fetch('{{ url_for("api_logs_tail") }}')
+        .then(response => response.json())
+        .then(data => {
+            if (data.status === 'success') {
+                viewer.textContent = data.lines.join('');
+                if (stickToBottom) viewer.scrollTop = viewer.scrollHeight;
+            } else {
+                viewer.textContent = 'Error: ' + data.message;
+            }
+        })
+        .catch(err => { viewer.textContent = 'Request failed: ' + err; });
+}
+
+function clearView() {
+    document.getElementById('log-viewer').textContent = '';
+}
+
+function downloadContent(elementId, filename) {
+    var text = document.getElementById(elementId).textContent;
+    var blob = new Blob([text], { type: 'text/plain' });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(function() { URL.revokeObjectURL(url); }, 30000);
+}
+
+function startPolling() {
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = setInterval(function() {
+        if (document.getElementById('auto-refresh').checked) fetchLogs();
+    }, 2000);
+}
+
+fetchLogs();
+startPolling();
+document.getElementById('log-viewer').scrollTop = 999999;
 </script>
 </body>
 </html>'''
