@@ -2034,10 +2034,30 @@ DEVICE_DETAIL_TEMPLATE = '''<!DOCTYPE html>
 
     var HISTORY = {{ history|tojson }};
 
+    function timeAgo(epochSeconds) {
+        var diff = (Date.now() / 1000) - epochSeconds;
+        if (diff < 0) diff = 0;
+        var units = [
+            ['year', 31536000], ['month', 2592000], ['day', 86400],
+            ['hour', 3600], ['minute', 60], ['second', 1]
+        ];
+        for (var i = 0; i < units.length; i++) {
+            var count = Math.floor(diff / units[i][1]);
+            if (count >= 1) {
+                return count + ' ' + units[i][0] + (count === 1 ? '' : 's') + ' ago';
+            }
+        }
+        return 'just now';
+    }
+
     function versionLabel(v, idx) {
         var num = (v && v.num !== undefined) ? v.num : (idx + 1);
-        var when = (v && v.epoch !== undefined) ? new Date(parseFloat(v.epoch) * 1000).toLocaleString()
-                 : (v && v.date !== undefined ? v.date : '');
+        var when = '';
+        if (v && v.epoch !== undefined) {
+            when = new Date(parseFloat(v.epoch) * 1000).toLocaleString() + ' - ' + timeAgo(parseFloat(v.epoch));
+        } else if (v && v.date !== undefined) {
+            when = v.date;
+        }
         return 'Version ' + num + (when ? ' - ' + when : '');
     }
 
@@ -2052,7 +2072,10 @@ DEVICE_DETAIL_TEMPLATE = '''<!DOCTYPE html>
             b.appendChild(optA.cloneNode(true));
         });
         if (HISTORY.length > 0) a.value = 0;
-        if (HISTORY.length > 1) b.value = 1;
+        if (HISTORY.length > 1) {
+            b.value = 1;
+            compareDiffs();
+        }
     }
     initDiffPickers();
 
@@ -2157,7 +2180,9 @@ DEVICE_DETAIL_TEMPLATE = '''<!DOCTYPE html>
         var epoch = el.getAttribute('data-epoch');
         if (epoch && !isNaN(parseFloat(epoch))) {
             var d = new Date(parseFloat(epoch) * 1000);
-            if (!isNaN(d.getTime())) el.textContent = d.toLocaleString();
+            if (!isNaN(d.getTime())) {
+                el.textContent = d.toLocaleString() + ' (' + timeAgo(parseFloat(epoch)) + ')';
+            }
         }
     });
     </script>
