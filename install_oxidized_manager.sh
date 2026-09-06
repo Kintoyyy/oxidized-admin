@@ -61,6 +61,11 @@ SERVER_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
 SERVER_IP=${SERVER_IP:-127.0.0.1}
 info "Detected server IP: $SERVER_IP"
 
+info "Checking DNS resolution..."
+if ! getent hosts rubygems.org &> /dev/null; then
+    error "Cannot resolve rubygems.org -- DNS isn't working on this host (common on freshly created LXC containers). Fix it before continuing, e.g.: echo 'nameserver 8.8.8.8' | sudo tee /etc/resolv.conf -- then re-run this script."
+fi
+
 # ============================================================================
 # USER INPUT
 # ============================================================================
