@@ -13,7 +13,7 @@ import shutil
 import sqlite3
 import subprocess
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from functools import wraps
 from pathlib import Path
 
@@ -1024,6 +1024,48 @@ def get_device_group(device_name):
             return dev.get('group') or 'default'
     return 'default'
 
+def reconcile_queued_backups(device_name, history):
+    """Resolve 'queued' backup_history rows left over from the async 'Update
+    Configuration' action (Oxidized's /node/next has no callback, so we can't
+    know synchronously whether it succeeded). If a version has appeared in
+    Oxidized's own history since the row was queued, mark it successful;
+    if too much time has passed with nothing new, mark it timed out."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    c.execute("SELECT id, created_at FROM backup_history WHERE device_name = ? AND status = 'queued'",
+              (device_name,))
+    queued = c.fetchall()
+    if not queued:
+        conn.close()
+        return
+
+    history_epochs = []
+    for v in history:
+        epoch = v.get('epoch') if isinstance(v, dict) else None
+        if epoch is not None:
+            try:
+                history_epochs.append(float(epoch))
+            except (TypeError, ValueError):
+                pass
+
+    now = datetime.now(timezone.utc)
+    for row in queued:
+        try:
+            queued_at = datetime.strptime(row['created_at'], '%Y-%m-%d %H:%M:%S').replace(tzinfo=timezone.utc)
+        except (TypeError, ValueError):
+            continue
+        queued_epoch = queued_at.timestamp()
+
+        if any(e >= queued_epoch for e in history_epochs):
+            c.execute("UPDATE backup_history SET status = 'success' WHERE id = ?", (row['id'],))
+        elif now - queued_at > timedelta(minutes=3):
+            c.execute('''UPDATE backup_history SET status = 'error',
+                         error_message = 'Timed out waiting for Oxidized to complete the fetch'
+                         WHERE id = ?''', (row['id'],))
+    conn.commit()
+    conn.close()
+
 @app.route('/device/<device_name>')
 @requires_auth
 def device_detail(device_name):
@@ -1031,6 +1073,7 @@ def device_detail(device_name):
     group = get_device_group(device_name)
     config = get_oxidized_node_config(device_name, group)
     history = get_oxidized_node_history(device_name, group)
+    reconcile_queued_backups(device_name, history)
 
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -1962,7 +2005,10 @@ DEVICE_DETAIL_TEMPLATE = '''<!DOCTYPE html>
                 <div class="muted" style="font-size: 12px;">{{ backup.error_message }}</div>
                 {% endif %}
             </div>
-            <a class="btn btn-outline btn-sm" href="{{ url_for('get_device_config', device_name=device_name) }}" download="{{ device_name }}.conf" title="Downloads the device's current config (this app doesn't store a separate copy per backup entry)">Download</a>
+            <div class="flex">
+                <a class="btn btn-outline btn-sm" href="{{ url_for('get_device_config', device_name=device_name) }}" target="_blank" title="Previews the device's current config (this app doesn't store a separate copy per backup entry)">View</a>
+                <a class="btn btn-outline btn-sm" href="{{ url_for('get_device_config', device_name=device_name) }}" download="{{ device_name }}.conf" title="Downloads the device's current config (this app doesn't store a separate copy per backup entry)">Download</a>
+            </div>
         </div>
         {% else %}
         <div class="muted">No backups logged yet through this app. Click "Update Configuration" on the Config tab to trigger one - Oxidized's own scheduled backups show up under Versions instead.</div>
