@@ -45,7 +45,7 @@ You'll be prompted for the admin page install directory, Oxidized config directo
 5. Separately offers to expose the Oxidized web GUI itself on port 8888 via Nginx, password-protected by default. If you say LibreNMS needs it (its built-in Oxidized widget talks to the REST API directly and doesn't support basic auth), the installer also allowlists just the LibreNMS host's IP to skip the password — everyone else still needs one (see [Securing the Oxidized Web GUI](#securing-the-oxidized-web-gui)).
 6. Always does a fresh `git clone` of this repo and overwrites the admin page files (`oxidized_nms_manager.py`, `requirements.txt`, any `.html` templates) in the install directory, initializes the database, and sets up the `oxidized-manager.service` systemd unit.
 
-That last step means **re-running the installer is also how you update the admin page** — it always pulls the latest code from git and replaces what's deployed, regardless of local edits. The Oxidized config file itself is left alone unless you choose "Nuke". Re-running it also cleans up sites left behind by older versions of this installer (see [Troubleshooting](#troubleshooting) if you're upgrading from one and port 80 is misbehaving).
+That last step means **re-running the installer is also how you update the admin page** — it always pulls the latest code from git and replaces what's deployed, regardless of local edits (Settings also has an **Update to Latest Version** button that does the same pull-and-restart without a full re-run, and shows the currently deployed commit hash so you can tell what's actually running). The Oxidized config file itself is left alone unless you choose "Nuke". Re-running it also cleans up sites left behind by older versions of this installer (see [Troubleshooting](#troubleshooting) if you're upgrading from one and port 80 is misbehaving).
 
 Open `http://<host>/` (or `http://<host>:5000` if you declined the Nginx step) and log in with the admin credentials you set.
 
@@ -87,8 +87,9 @@ Pushes a copy of each device's config to a GitHub repo whenever a queued "Update
    - **GitHub Branch** — the repo's default branch (`main` unless you changed it)
    - Check **Push backups to GitHub**, then Save Settings
 4. If you see "GitPython not installed" instead of the form, run `pip install GitPython` in the app's virtualenv and reload the page.
+5. Click **Test GitHub Push**, right below Save Settings, to push a throwaway commit immediately and confirm the repo URL/token/branch actually work — no need to wait for a real device backup to find out a token was wrong.
 
-**How it pushes:** there's no push-on-a-timer — a push happens the next time anyone opens that device's detail page after Oxidized finishes fetching its new config (that's also when this app itself resolves whether the fetch succeeded, since Oxidized has no completion callback). Each push writes `<device_name>/<timestamp>.conf` into the repo, commits it, and pushes to the configured branch. The repo is cloned once to `~/.oxidized_manager/github_backup` on the server and reused after that.
+**How it pushes:** outside of that test button, there's no push-on-a-timer — a push happens the next time anyone opens that device's detail page after Oxidized finishes fetching its new config (that's also when this app itself resolves whether the fetch succeeded, since Oxidized has no completion callback). Each push writes `<device_name>/<timestamp>.conf` into the repo, commits it, and pushes to the configured branch. The repo is cloned once to `~/.oxidized_manager/github_backup` on the server and reused after that.
 
 ## Usage
 
@@ -211,7 +212,7 @@ sudo nginx -t && sudo systemctl reload nginx
 
 **GitHub integration disabled** → `pip install GitPython`
 
-**Backups not showing up on GitHub** — a push only happens when someone opens the device's page after Oxidized finishes fetching (see [Backing Up to GitHub](#backing-up-to-github)), so open that device's page first. If it still doesn't push, check the logs for the actual git error (bad token, wrong branch, repo doesn't exist yet):
+**Backups not showing up on GitHub** — first click **Test GitHub Push** in Settings to check the repo URL/token/branch work at all, independent of any device. If that succeeds but real device backups still aren't appearing, remember a push only happens when someone opens the device's page after Oxidized finishes fetching (see [Backing Up to GitHub](#backing-up-to-github)) — open that device's page. If the test button itself fails, check the logs for the actual git error (bad token, wrong branch, repo doesn't exist yet):
 ```bash
 sudo journalctl -u oxidized-manager | grep -i "GitHub push error\|GitHub repo init error"
 ```
