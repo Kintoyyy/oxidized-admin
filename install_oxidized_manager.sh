@@ -313,9 +313,20 @@ else
     info "Existing Oxidized config found, leaving it untouched"
 fi
 
-if [ ! -f "$CONFIG_DIR/router.db" ]; then
-    touch "$CONFIG_DIR/router.db"
-    info "Created $CONFIG_DIR/router.db"
+if [ ! -s "$CONFIG_DIR/router.db" ]; then
+    # "-s" (exists AND non-empty), not "-f": earlier versions of this
+    # installer created an empty file here, and re-running against one of
+    # those needs to seed it too, not just a totally-missing file.
+    #
+    # Oxidized refuses to start at all with zero nodes ("source returns no
+    # usable nodes") instead of idling, so an empty router.db would leave it
+    # crash-looping forever until someone adds a real device through the
+    # admin page. Seed one placeholder pointing at a reserved, non-routable
+    # documentation address (RFC 5737) so it starts cleanly instead -- it'll
+    # just show as unreachable in the admin page until you delete it or
+    # replace it with real devices.
+    echo "example-device:192.0.2.1:ios:admin:admin:default" > "$CONFIG_DIR/router.db"
+    info "Created $CONFIG_DIR/router.db with a placeholder device (delete it once you add real ones)"
 fi
 
 if id -u oxidized &> /dev/null; then
@@ -822,7 +833,9 @@ echo "Quick Setup Next Steps:"
 echo "  1. Open the Web Interface URL above in your browser"
 echo "  2. Log in with your admin credentials"
 echo "  3. Go to Settings → configure LibreNMS API (optional)"
-echo "  4. Add devices via Devices tab or sync from LibreNMS"
+echo "  4. Add real devices via the Devices tab or sync from LibreNMS, then delete"
+echo "     the placeholder 'example-device' entry this installer added so Oxidized"
+echo "     would have something to start with"
 echo ""
 echo "Project:     https://github.com/Kintoyyy/oxidized-admin"
 echo "Credits:     https://github.com/ytti/oxidized + https://github.com/ytti/oxidized-web"
