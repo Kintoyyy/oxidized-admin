@@ -1922,7 +1922,10 @@ def render_sidebar(active):
     return ('''<aside class="sidebar">
         <a class="brand" href="{{ url_for('dashboard') }}">''' + LOGO_SVG + '''Oxidized Manager</a>
         <nav>''' + links + '''</nav>
-        <div class="bottom"><a href="{{ url_for('logout') }}"><i class="bi bi-box-arrow-right"></i>Logout</a></div>
+        <div class="bottom">
+            <a href="{{ url_for('logout') }}"><i class="bi bi-box-arrow-right"></i>Logout</a>
+            <a href="https://github.com/Kintoyyy/oxidized-admin" target="_blank" rel="noopener" style="font-size: 11px;"><i class="bi bi-github"></i>Kintoyyy/oxidized-admin</a>
+        </div>
     </aside>
     ''')
 
@@ -3097,6 +3100,23 @@ SETTINGS_TEMPLATE = '''<!DOCTYPE html>
 
         <button type="submit" class="btn"><i class="bi bi-check-lg"></i>Save Settings</button>
     </form>
+
+    <div class="card mb-2" style="margin-top: 1.25rem;">
+        <div class="card-header"><div class="card-title"><i class="bi bi-info-circle"></i> About</div></div>
+        <div class="card-content">
+            <p style="margin-bottom: 0.75rem;">
+                Oxidized Manager is an admin UI for
+                <a href="https://github.com/ytti/oxidized" target="_blank" rel="noopener" style="color: #60a5fa;">Oxidized</a>,
+                built on top of the REST API exposed by
+                <a href="https://github.com/ytti/oxidized-web" target="_blank" rel="noopener" style="color: #60a5fa;">oxidized-web</a>.
+            </p>
+            <ul style="padding-left: 1.1rem; line-height: 1.9;">
+                <li>Project: <a href="https://github.com/Kintoyyy/oxidized-admin" target="_blank" rel="noopener" style="color: #60a5fa;"><i class="bi bi-github"></i> Kintoyyy/oxidized-admin</a></li>
+                <li>Credits & docs: <a href="https://github.com/ytti/oxidized-web" target="_blank" rel="noopener" style="color: #60a5fa;"><i class="bi bi-github"></i> ytti/oxidized-web</a></li>
+                <li>Inspired by: <a href="https://github.com/MrMime71/oxidized-configuration-manager-v1/" target="_blank" rel="noopener" style="color: #60a5fa;"><i class="bi bi-github"></i> MrMime71/oxidized-configuration-manager-v1</a></li>
+            </ul>
+        </div>
+    </div>
 </div></main>
 </div>
 
