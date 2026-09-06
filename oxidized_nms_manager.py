@@ -1523,6 +1523,7 @@ def librenms_alerts():
 # Shared shadcn-inspired design tokens + components, reused by every page.
 BASE_CSS = '''
 @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap');
+@import url('https://cdnjs.cloudflare.com/ajax/libs/bootstrap-icons/1.11.3/font/bootstrap-icons.min.css');
 :root {
     --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', 'Cascadia Code', Consolas, monospace;
     --background: #09090b;
@@ -1565,6 +1566,7 @@ code, pre { font-family: var(--font-mono); }
 }
 .sidebar nav { display: flex; flex-direction: column; gap: 2px; flex: 1; }
 .sidebar nav a {
+    display: flex; align-items: center; gap: 9px;
     padding: 7px 9px; border-radius: var(--radius);
     font-size: 13px; color: var(--muted-foreground);
     transition: background .15s, color .15s;
@@ -1573,9 +1575,12 @@ code, pre { font-family: var(--font-mono); }
 .sidebar nav a.active { background: var(--accent); color: var(--foreground); font-weight: 500; }
 .sidebar .bottom { padding-top: 0.6rem; margin-top: 0.6rem; border-top: 1px solid var(--border); }
 .sidebar .bottom a {
-    display: block; padding: 7px 9px; border-radius: var(--radius);
+    display: flex; align-items: center; gap: 9px;
+    padding: 7px 9px; border-radius: var(--radius);
     font-size: 13px; color: var(--muted-foreground);
 }
+.sidebar nav a i, .sidebar .bottom a i { font-size: 15px; width: 16px; text-align: center; }
+.sidebar .brand { display: flex; align-items: center; gap: 8px; }
 .sidebar .bottom a:hover { background: var(--accent); color: var(--foreground); }
 
 .main { flex: 1; min-width: 0; }
@@ -1615,7 +1620,7 @@ label { display: block; font-size: 12px; font-weight: 500; color: var(--muted-fo
 
 .card { background: var(--card); border: 1px solid var(--border); border-radius: calc(var(--radius) + 2px); }
 .card-header { padding: 1rem 1.25rem; border-bottom: 1px solid var(--border); }
-.card-title { font-size: 14px; font-weight: 600; }
+.card-title { display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 600; }
 .card-content { padding: 1.25rem; }
 
 table.table { width: 100%; border-collapse: collapse; font-size: 13px; }
@@ -1645,7 +1650,7 @@ table.table tbody tr:hover td { background: var(--accent); }
 .alert-danger { color: #f87171; border-color: rgba(239, 68, 68, .3); background: rgba(239, 68, 68, .08); }
 
 .tabs { display: flex; gap: 0; border-bottom: 1px solid var(--border); margin-bottom: 1.25rem; }
-.tab { padding: 8px 4px; margin-right: 1.25rem; background: none; border: none; color: var(--muted-foreground); font-size: 13px; cursor: pointer; border-bottom: 2px solid transparent; }
+.tab { display: inline-flex; align-items: center; gap: 6px; padding: 8px 4px; margin-right: 1.25rem; background: none; border: none; color: var(--muted-foreground); font-size: 13px; cursor: pointer; border-bottom: 2px solid transparent; }
 .tab:hover { color: var(--foreground); }
 .tab.active { color: var(--foreground); border-bottom-color: var(--foreground); }
 .tab-content { display: none; }
@@ -1675,25 +1680,26 @@ table.table tbody tr:hover td { background: var(--accent); }
     background: radial-gradient(circle at top, #18181b, #09090b 60%); padding: 1rem;
 }
 .auth-card { width: 100%; max-width: 400px; }
-.auth-logo { text-align: center; margin-bottom: 1.5rem; font-size: 15px; font-weight: 600; color: var(--muted-foreground); }
+.auth-logo { display: flex; align-items: center; justify-content: center; gap: 8px; margin-bottom: 1.5rem; font-size: 15px; font-weight: 600; color: var(--muted-foreground); }
 '''
 
 def render_sidebar(active):
     """Left sidebar shared across all authenticated pages, with the current section highlighted."""
-    def link(endpoint, label):
+    def link(endpoint, icon, label):
         cls = ' class="active"' if endpoint == active else ''
-        return '<a' + cls + ' href="{{ url_for(\'' + endpoint + '\') }}">' + label + '</a>'
+        return ('<a' + cls + ' href="{{ url_for(\'' + endpoint + '\') }}">'
+                + '<i class="bi ' + icon + '"></i>' + label + '</a>')
     links = (
-        link('dashboard', 'Dashboard') +
-        link('manage_devices', 'Devices') +
-        link('manage_config', 'Config') +
-        link('settings', 'Settings') +
-        link('manage_users', 'Users')
+        link('dashboard', 'bi-speedometer2', 'Dashboard') +
+        link('manage_devices', 'bi-hdd-network', 'Devices') +
+        link('manage_config', 'bi-file-earmark-code', 'Config') +
+        link('settings', 'bi-sliders', 'Settings') +
+        link('manage_users', 'bi-people', 'Users')
     )
     return ('''<aside class="sidebar">
-        <a class="brand" href="{{ url_for('dashboard') }}">Oxidized Manager</a>
+        <a class="brand" href="{{ url_for('dashboard') }}"><i class="bi bi-diagram-3"></i>Oxidized Manager</a>
         <nav>''' + links + '''</nav>
-        <div class="bottom"><a href="{{ url_for('logout') }}">Logout</a></div>
+        <div class="bottom"><a href="{{ url_for('logout') }}"><i class="bi bi-box-arrow-right"></i>Logout</a></div>
     </aside>
     ''')
 
@@ -1709,7 +1715,7 @@ LOGIN_TEMPLATE = '''<!DOCTYPE html>
 <div class="auth-shell">
     <div class="auth-card card">
         <div class="card-content">
-            <div class="auth-logo">Oxidized Manager</div>
+            <div class="auth-logo"><i class="bi bi-diagram-3"></i>Oxidized Manager</div>
 
             {% with messages = get_flashed_messages(category_filter=['danger']) %}
                 {% if messages %}
@@ -1726,7 +1732,7 @@ LOGIN_TEMPLATE = '''<!DOCTYPE html>
                     <label>Password</label>
                     <input type="password" name="password" required>
                 </div>
-                <button type="submit" class="btn" style="width: 100%;">Sign in</button>
+                <button type="submit" class="btn" style="width: 100%;"><i class="bi bi-box-arrow-in-right"></i>Sign in</button>
             </form>
         </div>
     </div>
@@ -1766,7 +1772,7 @@ SETUP_TEMPLATE = '''<!DOCTYPE html>
                     <input type="email" name="email" placeholder="admin@example.com">
                 </div>
 
-                <button type="submit" class="btn" style="width: 100%;">Create Admin Account</button>
+                <button type="submit" class="btn" style="width: 100%;"><i class="bi bi-check-lg"></i>Create Admin Account</button>
             </form>
         </div>
     </div>
@@ -1845,8 +1851,8 @@ DASHBOARD_TEMPLATE = '''<!DOCTYPE html>
                     <td style="white-space: nowrap;">{{ device.last_failure if device.last_failure is not none else 'never' }}</td>
                     <td>
                         <div class="flex">
-                            <a href="{{ url_for('device_detail', device_name=device.name) }}" class="btn btn-outline btn-sm">View</a>
-                            <button type="button" class="btn btn-outline btn-sm" id="update-btn-{{ loop.index0 }}" onclick="updateDeviceNow('{{ device.name }}', {{ loop.index0 }})">Update</button>
+                            <a href="{{ url_for('device_detail', device_name=device.name) }}" class="btn btn-outline btn-sm"><i class="bi bi-eye"></i>View</a>
+                            <button type="button" class="btn btn-outline btn-sm" id="update-btn-{{ loop.index0 }}" onclick="updateDeviceNow('{{ device.name }}', {{ loop.index0 }})"><i class="bi bi-arrow-repeat"></i>Update</button>
                         </div>
                         <span id="update-result-{{ loop.index0 }}" style="font-size: 12px;"></span>
                     </td>
@@ -1866,23 +1872,23 @@ DASHBOARD_TEMPLATE = '''<!DOCTYPE html>
         var result = document.getElementById('update-result-' + idx);
         btn.disabled = true;
         result.style.color = '#cbd5e1';
-        result.textContent = '⏳ queuing...';
+        result.innerHTML = '<i class="bi bi-hourglass-split"></i> queuing...';
 
         fetch('/api/oxidized/fetch/' + encodeURIComponent(name), { method: 'POST' })
             .then(response => response.json().then(data => ({ ok: response.ok, data: data })))
             .then(({ ok, data }) => {
                 if (ok && data.status === 'success') {
-                    result.style.color = '#10b981';
-                    result.textContent = '✓ queued';
+                    result.style.color = '#4ade80';
+                    result.innerHTML = '<i class="bi bi-check-circle-fill"></i> queued';
                 } else {
                     result.style.color = '#f87171';
-                    result.textContent = '✗ ' + data.message;
+                    result.innerHTML = '<i class="bi bi-x-circle-fill"></i> ' + data.message;
                 }
                 btn.disabled = false;
             })
             .catch(err => {
                 result.style.color = '#f87171';
-                result.textContent = '✗ ' + err;
+                result.innerHTML = '<i class="bi bi-x-circle-fill"></i> ' + err;
                 btn.disabled = false;
             });
     }
@@ -1913,20 +1919,20 @@ DEVICE_DETAIL_TEMPLATE = '''<!DOCTYPE html>
 <main class="main"><div class="page-full">
     <div class="page-header">
         <h1>{{ device_name }}</h1>
-        <a class="btn btn-outline btn-sm" href="{{ url_for('manage_devices') }}">Back to Devices</a>
+        <a class="btn btn-outline btn-sm" href="{{ url_for('manage_devices') }}"><i class="bi bi-arrow-left"></i>Back to Devices</a>
     </div>
 
     <div class="tabs">
-        <button class="tab active" onclick="showTab('config')">Config</button>
-        <button class="tab" onclick="showTab('history')">Versions</button>
-        <button class="tab" onclick="showTab('backups')">Backups</button>
+        <button class="tab active" onclick="showTab('config')"><i class="bi bi-file-earmark-text"></i> Config</button>
+        <button class="tab" onclick="showTab('history')"><i class="bi bi-clock-history"></i> Versions</button>
+        <button class="tab" onclick="showTab('backups')"><i class="bi bi-archive"></i> Backups</button>
     </div>
 
     <div id="config" class="tab-content active">
         <div class="flex mb-2">
-            <button class="btn" id="update-config-btn" onclick="updateConfig()">Update Configuration</button>
-            <button class="btn btn-outline" onclick="rawView('config-viewer', '{{ device_name }}.conf')">Raw</button>
-            <button class="btn btn-outline" onclick="downloadContent('config-viewer', '{{ device_name }}.conf')">Download</button>
+            <button class="btn" id="update-config-btn" onclick="updateConfig()"><i class="bi bi-arrow-repeat"></i>Update Configuration</button>
+            <button class="btn btn-outline" onclick="rawView('config-viewer', '{{ device_name }}.conf')"><i class="bi bi-code-slash"></i>Raw</button>
+            <button class="btn btn-outline" onclick="downloadContent('config-viewer', '{{ device_name }}.conf')"><i class="bi bi-download"></i>Download</button>
             <span id="update-config-result" style="font-size: 13px;"></span>
         </div>
         <div class="code-viewer" id="config-viewer">{{ config or 'No configuration found' }}</div>
@@ -1946,7 +1952,7 @@ DEVICE_DETAIL_TEMPLATE = '''<!DOCTYPE html>
                             {{ v.epoch if v.epoch is defined else (v.date if v.date is defined else '-') }}
                         </td>
                         <td>
-                            <button class="btn btn-outline btn-sm" onclick='viewVersion({{ v|tojson }})'>View</button>
+                            <button class="btn btn-outline btn-sm" onclick='viewVersion({{ v|tojson }})'><i class="bi bi-eye"></i>View</button>
                         </td>
                     </tr>
                 {% else %}
@@ -1957,12 +1963,12 @@ DEVICE_DETAIL_TEMPLATE = '''<!DOCTYPE html>
         </div>
         <div class="code-viewer" id="version-content"></div>
         <div id="version-content-actions" class="flex" style="display: none; margin-top: 0.5rem;">
-            <button class="btn btn-outline btn-sm" onclick="rawView('version-content', '{{ device_name }}-version.conf')">Raw</button>
-            <button class="btn btn-outline btn-sm" onclick="downloadContent('version-content', '{{ device_name }}-version.conf')">Download</button>
+            <button class="btn btn-outline btn-sm" onclick="rawView('version-content', '{{ device_name }}-version.conf')"><i class="bi bi-code-slash"></i>Raw</button>
+            <button class="btn btn-outline btn-sm" onclick="downloadContent('version-content', '{{ device_name }}-version.conf')"><i class="bi bi-download"></i>Download</button>
         </div>
 
         <div class="card" style="margin-top: 1.5rem;">
-            <div class="card-header"><div class="card-title">Compare Versions</div></div>
+            <div class="card-header"><div class="card-title"><i class="bi bi-file-diff"></i> Compare Versions</div></div>
             <div class="card-content">
                 <div style="display: flex; gap: 1rem; align-items: flex-end; flex-wrap: wrap;">
                     <div class="field" style="margin-bottom:0;">
@@ -1973,7 +1979,7 @@ DEVICE_DETAIL_TEMPLATE = '''<!DOCTYPE html>
                         <label>Compared against</label>
                         <select id="diff-select-b"></select>
                     </div>
-                    <button class="btn" onclick="compareDiffs()">Get Diffs</button>
+                    <button class="btn" onclick="compareDiffs()"><i class="bi bi-file-diff"></i>Get Diffs</button>
                 </div>
             </div>
         </div>
@@ -2006,8 +2012,8 @@ DEVICE_DETAIL_TEMPLATE = '''<!DOCTYPE html>
                 {% endif %}
             </div>
             <div class="flex">
-                <a class="btn btn-outline btn-sm" href="{{ url_for('get_device_config', device_name=device_name) }}" target="_blank" title="Previews the device's current config (this app doesn't store a separate copy per backup entry)">View</a>
-                <a class="btn btn-outline btn-sm" href="{{ url_for('get_device_config', device_name=device_name) }}" download="{{ device_name }}.conf" title="Downloads the device's current config (this app doesn't store a separate copy per backup entry)">Download</a>
+                <a class="btn btn-outline btn-sm" href="{{ url_for('get_device_config', device_name=device_name) }}" target="_blank" title="Previews the device's current config (this app doesn't store a separate copy per backup entry)"><i class="bi bi-eye"></i>View</a>
+                <a class="btn btn-outline btn-sm" href="{{ url_for('get_device_config', device_name=device_name) }}" download="{{ device_name }}.conf" title="Downloads the device's current config (this app doesn't store a separate copy per backup entry)"><i class="bi bi-download"></i>Download</a>
             </div>
         </div>
         {% else %}
@@ -2030,23 +2036,23 @@ DEVICE_DETAIL_TEMPLATE = '''<!DOCTYPE html>
         var result = document.getElementById('update-config-result');
         btn.disabled = true;
         result.style.color = '#cbd5e1';
-        result.textContent = '⏳ Queuing update with Oxidized...';
+        result.innerHTML = '<i class="bi bi-hourglass-split"></i> Queuing update with Oxidized...';
 
         fetch('{{ url_for("api_oxidized_fetch", device_name=device_name) }}', { method: 'POST' })
             .then(response => response.json().then(data => ({ ok: response.ok, data: data })))
             .then(({ ok, data }) => {
                 if (ok && data.status === 'success') {
-                    result.style.color = '#10b981';
-                    result.textContent = '✓ ' + data.message + ' Reload this page in a few seconds to see the fetched config.';
+                    result.style.color = '#4ade80';
+                    result.innerHTML = '<i class="bi bi-check-circle-fill"></i> ' + data.message + ' Reload this page in a few seconds to see the fetched config.';
                 } else {
                     result.style.color = '#f87171';
-                    result.textContent = '✗ ' + data.message;
+                    result.innerHTML = '<i class="bi bi-x-circle-fill"></i> ' + data.message;
                 }
                 btn.disabled = false;
             })
             .catch(err => {
                 result.style.color = '#f87171';
-                result.textContent = '✗ ' + err;
+                result.innerHTML = '<i class="bi bi-x-circle-fill"></i> ' + err;
                 btn.disabled = false;
             });
     }
@@ -2256,13 +2262,13 @@ DEVICE_MANAGEMENT_TEMPLATE = '''<!DOCTYPE html>
     <div class="page-header">
         <h1>Device Management</h1>
         <div class="flex">
-            <button class="btn btn-outline btn-sm" onclick="location.href='{{ url_for('manage_groups') }}'">Manage Groups</button>
-            <button class="btn btn-sm" onclick="showAddForm()">+ Add Device</button>
+            <button class="btn btn-outline btn-sm" onclick="location.href='{{ url_for('manage_groups') }}'"><i class="bi bi-collection"></i>Manage Groups</button>
+            <button class="btn btn-sm" onclick="showAddForm()"><i class="bi bi-plus-lg"></i>Add Device</button>
         </div>
     </div>
 
     <div id="add-form" class="card mb-2" style="display: none;">
-        <div class="card-header"><div class="card-title" id="form-title">Add New Device</div></div>
+        <div class="card-header"><div class="card-title"><i class="bi bi-hdd-network"></i><span id="form-title">Add New Device</span></div></div>
         <div class="card-content">
             <form method="POST" id="device-form">
                 <input type="hidden" name="action" id="form-action" value="add">
@@ -2312,8 +2318,8 @@ DEVICE_MANAGEMENT_TEMPLATE = '''<!DOCTYPE html>
                     </div>
                 </div>
                 <div class="flex">
-                    <button type="submit" class="btn">Save Device</button>
-                    <button type="button" class="btn btn-outline" onclick="hideForm()">Cancel</button>
+                    <button type="submit" class="btn"><i class="bi bi-check-lg"></i>Save Device</button>
+                    <button type="button" class="btn btn-outline" onclick="hideForm()"><i class="bi bi-x-lg"></i>Cancel</button>
                 </div>
             </form>
         </div>
@@ -2340,12 +2346,12 @@ DEVICE_MANAGEMENT_TEMPLATE = '''<!DOCTYPE html>
                     <td><span class="badge">{{ device.group }}</span></td>
                     <td>{{ device.get('ssh_port', 22) }}</td>
                     <td>
-                        <button class="btn btn-outline btn-sm" onclick="testSSH('{{ device.name }}', '{{ device.ip }}', '{{ device.username }}', '{{ device.password }}', {{ device.get('ssh_port', 22) }})">Test SSH</button>
-                        <button class="btn btn-outline btn-sm" onclick='editDevice({{ device|tojson }})'>Edit</button>
+                        <button class="btn btn-outline btn-sm" onclick="testSSH('{{ device.name }}', '{{ device.ip }}', '{{ device.username }}', '{{ device.password }}', {{ device.get('ssh_port', 22) }})"><i class="bi bi-plug"></i>Test SSH</button>
+                        <button class="btn btn-outline btn-sm" onclick='editDevice({{ device|tojson }})'><i class="bi bi-pencil"></i>Edit</button>
                         <form method="POST" style="display: inline;">
                             <input type="hidden" name="action" value="delete">
                             <input type="hidden" name="ip" value="{{ device.ip }}">
-                            <button type="submit" class="btn btn-outline btn-sm" style="color: #f87171;" onclick="return confirm('Delete device?')">Delete</button>
+                            <button type="submit" class="btn btn-outline btn-sm" style="color: #f87171;" onclick="return confirm('Delete device?')"><i class="bi bi-trash"></i>Delete</button>
                         </form>
                     </td>
                 </tr>
@@ -2431,7 +2437,7 @@ DEVICE_MANAGEMENT_TEMPLATE = '''<!DOCTYPE html>
         if (!resultRow) resultRow = document.getElementById('test-result-0');
         
         resultRow.classList.add('show');
-        resultRow.innerHTML = '<td colspan="6" style="text-align: center; color: #cbd5e1;">⏳ Testing SSH connection...</td>';
+        resultRow.innerHTML = '<td colspan="6" style="text-align: center; color: #cbd5e1;"><i class="bi bi-hourglass-split"></i> Testing SSH connection...</td>';
         
         var formData = new FormData();
         formData.append('host', ip);
@@ -2447,21 +2453,21 @@ DEVICE_MANAGEMENT_TEMPLATE = '''<!DOCTYPE html>
         .then(data => {
             var html = '<td colspan="6">';
             if (data.status === 'success') {
-                html += '<strong style="color: #10b981;">✓ ' + name + ':</strong> ' + data.message;
+                html += '<strong style="color: #4ade80;"><i class="bi bi-check-circle-fill"></i> ' + name + ':</strong> ' + data.message;
                 resultRow.className = 'test-result show success';
             } else {
-                html += '<strong style="color: #f87171;">✗ ' + name + ':</strong> ' + data.message;
+                html += '<strong style="color: #f87171;"><i class="bi bi-x-circle-fill"></i> ' + name + ':</strong> ' + data.message;
                 resultRow.className = 'test-result show error';
             }
             html += '</td>';
             resultRow.innerHTML = html;
-            
+
             setTimeout(() => {
                 resultRow.classList.remove('show');
             }, 6000);
         })
         .catch(error => {
-            resultRow.innerHTML = '<td colspan="6" style="color: #f87171;"><strong>✗ Error:</strong> ' + error + '</td>';
+            resultRow.innerHTML = '<td colspan="6" style="color: #f87171;"><strong><i class="bi bi-x-circle-fill"></i> Error:</strong> ' + error + '</td>';
             resultRow.className = 'test-result show error';
         });
     }
@@ -2490,7 +2496,7 @@ CONFIG_MANAGEMENT_TEMPLATE = '''<!DOCTYPE html>
     <form method="POST">
         <input type="hidden" name="action" value="update_yaml">
         <textarea name="yaml_content" required class="mb-2">{{ config_yaml }}</textarea>
-        <button type="submit" class="btn">Save Configuration</button>
+        <button type="submit" class="btn"><i class="bi bi-check-lg"></i>Save Configuration</button>
     </form>
 </div></main>
 </div>
@@ -2518,15 +2524,15 @@ SETTINGS_TEMPLATE = '''<!DOCTYPE html>
     {% endif %}
 
     <div class="flex mb-2" style="flex-wrap: wrap;">
-        <button type="button" class="btn btn-outline btn-sm" id="restart-oxidized-btn" onclick="restartOxidized()">Restart Oxidized Service</button>
-        <button type="button" class="btn btn-outline btn-sm" id="test-oxidized-btn" onclick="testOxidized()">Test Oxidized Connection</button>
+        <button type="button" class="btn btn-outline btn-sm" id="restart-oxidized-btn" onclick="restartOxidized()"><i class="bi bi-arrow-clockwise"></i>Restart Oxidized Service</button>
+        <button type="button" class="btn btn-outline btn-sm" id="test-oxidized-btn" onclick="testOxidized()"><i class="bi bi-plug"></i>Test Oxidized Connection</button>
         <span id="restart-oxidized-result" style="font-size: 13px;"></span>
     </div>
     <pre id="test-oxidized-result" class="code-viewer mb-2" style="display: none; max-height: 400px;"></pre>
 
     <form method="POST">
         <div class="card mb-2">
-            <div class="card-header"><div class="card-title">Application Settings</div></div>
+            <div class="card-header"><div class="card-title"><i class="bi bi-gear"></i> Application Settings</div></div>
             <div class="card-content">
                 <div class="field">
                     <label>Application Name</label>
@@ -2544,7 +2550,7 @@ SETTINGS_TEMPLATE = '''<!DOCTYPE html>
         </div>
 
         <div class="card mb-2">
-            <div class="card-header"><div class="card-title">LibreNMS Integration (Optional)</div></div>
+            <div class="card-header"><div class="card-title"><i class="bi bi-diagram-3"></i> LibreNMS Integration (Optional)</div></div>
             <div class="card-content">
                 <div class="field">
                     <label>LibreNMS URL</label>
@@ -2562,7 +2568,7 @@ SETTINGS_TEMPLATE = '''<!DOCTYPE html>
         </div>
 
         <div class="card mb-2">
-            <div class="card-header"><div class="card-title">GitHub Integration (Optional)</div></div>
+            <div class="card-header"><div class="card-title"><i class="bi bi-github"></i> GitHub Integration (Optional)</div></div>
             <div class="card-content">
                 {% if not settings.has_gitpython %}
                 <div class="alert alert-danger">GitPython not installed. Run: <code>pip install GitPython</code></div>
@@ -2586,7 +2592,7 @@ SETTINGS_TEMPLATE = '''<!DOCTYPE html>
             </div>
         </div>
 
-        <button type="submit" class="btn">Save Settings</button>
+        <button type="submit" class="btn"><i class="bi bi-check-lg"></i>Save Settings</button>
     </form>
 </div></main>
 </div>
@@ -2597,24 +2603,24 @@ SETTINGS_TEMPLATE = '''<!DOCTYPE html>
         var result = document.getElementById('restart-oxidized-result');
         btn.disabled = true;
         result.style.color = '#cbd5e1';
-        result.textContent = '⏳ Restarting...';
+        result.innerHTML = '<i class="bi bi-hourglass-split"></i> Restarting...';
 
         fetch('{{ url_for("api_oxidized_restart") }}', { method: 'POST' })
             .then(response => response.json().then(data => ({ ok: response.ok, data: data })))
             .then(({ ok, data }) => {
                 if (ok && data.status === 'success') {
-                    result.style.color = '#10b981';
-                    result.textContent = '✓ ' + data.message + ' - reloading...';
+                    result.style.color = '#4ade80';
+                    result.innerHTML = '<i class="bi bi-check-circle-fill"></i> ' + data.message + ' - reloading...';
                     setTimeout(() => location.reload(), 2000);
                 } else {
                     result.style.color = '#f87171';
-                    result.textContent = '✗ ' + data.message;
+                    result.innerHTML = '<i class="bi bi-x-circle-fill"></i> ' + data.message;
                     btn.disabled = false;
                 }
             })
             .catch(err => {
                 result.style.color = '#f87171';
-                result.textContent = '✗ ' + err;
+                result.innerHTML = '<i class="bi bi-x-circle-fill"></i> ' + err;
                 btn.disabled = false;
             });
     }
@@ -2658,11 +2664,11 @@ GROUPS_MANAGEMENT_TEMPLATE = '''<!DOCTYPE html>
 <main class="main"><div class="page" style="max-width: 900px;">
     <div class="page-header">
         <h1>Device Groups</h1>
-        <a class="btn btn-outline btn-sm" href="{{ url_for('manage_devices') }}">Back to Devices</a>
+        <a class="btn btn-outline btn-sm" href="{{ url_for('manage_devices') }}"><i class="bi bi-arrow-left"></i>Back to Devices</a>
     </div>
 
     <div class="card mb-2">
-        <div class="card-header"><div class="card-title">Create New Group</div></div>
+        <div class="card-header"><div class="card-title"><i class="bi bi-plus-lg"></i> Create New Group</div></div>
         <div class="card-content">
             <form method="POST">
                 <input type="hidden" name="action" value="add">
@@ -2682,7 +2688,7 @@ GROUPS_MANAGEMENT_TEMPLATE = '''<!DOCTYPE html>
                     <label>Default Password</label>
                     <input type="password" name="default_password" placeholder="Default Password (optional)">
                 </div>
-                <button type="submit" class="btn">Create Group</button>
+                <button type="submit" class="btn"><i class="bi bi-check-lg"></i>Create Group</button>
             </form>
         </div>
     </div>
@@ -2707,7 +2713,7 @@ GROUPS_MANAGEMENT_TEMPLATE = '''<!DOCTYPE html>
                         <form method="POST" style="display: inline;">
                             <input type="hidden" name="action" value="delete">
                             <input type="hidden" name="group_id" value="{{ group.id }}">
-                            <button type="submit" class="btn btn-outline btn-sm" onclick="return confirm('Delete group?')">Delete</button>
+                            <button type="submit" class="btn btn-outline btn-sm" style="color: #f87171;" onclick="return confirm('Delete group?')"><i class="bi bi-trash"></i>Delete</button>
                         </form>
                     </td>
                 </tr>
@@ -2737,7 +2743,7 @@ USER_MANAGEMENT_TEMPLATE = '''<!DOCTYPE html>
     <div class="page-header"><h1>User Management</h1></div>
 
     <div class="card mb-2">
-        <div class="card-header"><div class="card-title">Create New User</div></div>
+        <div class="card-header"><div class="card-title"><i class="bi bi-person-plus"></i> Create New User</div></div>
         <div class="card-content">
             <form method="POST">
                 <input type="hidden" name="action" value="add">
@@ -2762,7 +2768,7 @@ USER_MANAGEMENT_TEMPLATE = '''<!DOCTYPE html>
                         </select>
                     </div>
                 </div>
-                <button type="submit" class="btn">Add User</button>
+                <button type="submit" class="btn"><i class="bi bi-check-lg"></i>Add User</button>
             </form>
         </div>
     </div>
