@@ -472,6 +472,13 @@ def test_ssh_connection(host, username, password, port=22, timeout=10):
 # GITHUB INTEGRATION (OPTIONAL)
 # ============================================================================
 
+def _redact_git_credentials(text):
+    """Strip any embedded 'user:token@' or 'token@' credentials out of a
+    string before it gets logged -- GitPython's exceptions include the full
+    command line (and sometimes git's own stderr, which can echo the URL
+    back) verbatim, so printing 'e' directly leaks the token into logs."""
+    return re.sub(r'https://[^/@\s]+@', 'https://***@', str(text))
+
 class GitHubBackupClient:
     def __init__(self):
         self.enabled = False
@@ -530,7 +537,14 @@ class GitHubBackupClient:
                     shutil.rmtree(self.local_path)
 
             if needs_clone:
-                auth_url = self.repo_url.replace('https://', f'https://{self.token}@')
+                # "x-access-token:<token>@" (explicit user:pass form), not
+                # just "<token>@" -- some git/libcurl versions only skip the
+                # credential prompt with a real user:pass pair; a bare
+                # username with no password can still trigger an interactive
+                # prompt, which fails outright with no TTY attached (as seen
+                # from a systemd service: "could not read Password ... No
+                # such device or address").
+                auth_url = self.repo_url.replace('https://', f'https://x-access-token:{self.token}@')
                 cloned = Repo.clone_from(auth_url, str(self.local_path), branch=self.branch)
                 try:
                     cloned.close()
@@ -538,7 +552,7 @@ class GitHubBackupClient:
                     pass
             return True
         except Exception as e:
-            print(f'GitHub repo init error: {e}')
+            print(f'GitHub repo init error: {_redact_git_credentials(e)}')
             return False
 
     def push_backup(self, device_name, config_content):
@@ -568,7 +582,7 @@ class GitHubBackupClient:
 
             return True
         except Exception as e:
-            print(f'GitHub push error: {e}')
+            print(f'GitHub push error: {_redact_git_credentials(e)}')
             return False
         finally:
             if repo is not None:
