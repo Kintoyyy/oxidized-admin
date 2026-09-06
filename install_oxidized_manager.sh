@@ -28,6 +28,17 @@ error() { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
 section() { echo -e "\n${BLUE}=== $1 ===${NC}\n"; }
 
 # ============================================================================
+# BANNER
+# ============================================================================
+
+echo -e "${BLUE}"
+echo "============================================================"
+echo "  Oxidized Manager Installer"
+echo "  https://github.com/Kintoyyy/oxidized-admin"
+echo "============================================================"
+echo -e "${NC}"
+
+# ============================================================================
 # PRE-FLIGHT CHECKS
 # ============================================================================
 
@@ -408,18 +419,34 @@ EOF
     info "✓ Nginx reverse proxy configured on port 80"
 
     info "Restricting Oxidized to listen on localhost only..."
+    # Oxidized's core (lib/oxidized/core.rb) checks for a top-level "rest:"
+    # key FIRST -- if present at all, it is used verbatim as the bind
+    # address/port and "extensions.oxidized-web.host"/"port" are ignored
+    # entirely (that extension only reads a "listen" key, never "host", so
+    # setting "host: 0.0.0.0 -> localhost" there is a silent no-op). So the
+    # "rest:" key is the only thing that actually needs to change.
     if grep -q '^rest:' "$CONFIG_DIR/config"; then
-        sed -i 's/^rest:.*/rest: localhost:8888/' "$CONFIG_DIR/config"
+        sed -i -E 's/^rest:.*/rest: localhost:8888/' "$CONFIG_DIR/config"
+    elif grep -qE '^\s*oxidized-web:\s*$' "$CONFIG_DIR/config"; then
+        if grep -qE '^\s*listen:' "$CONFIG_DIR/config"; then
+            sed -i -E 's/^(\s*)listen:.*/\1listen: 127.0.0.1/' "$CONFIG_DIR/config"
+        else
+            sed -i -E '/^\s*oxidized-web:\s*$/a\    listen: 127.0.0.1' "$CONFIG_DIR/config"
+        fi
     else
         echo 'rest: localhost:8888' >> "$CONFIG_DIR/config"
     fi
-    if grep -qE '^\s*host:\s*0\.0\.0\.0\s*$' "$CONFIG_DIR/config"; then
-        sed -i -E 's/^(\s*host:\s*)0\.0\.0\.0\s*$/\1localhost/' "$CONFIG_DIR/config"
-    else
-        warn "Could not find the oxidized-web extension's 'host' setting to restrict automatically; edit $CONFIG_DIR/config manually if needed."
-    fi
     systemctl restart oxidized.service
-    info "✓ Oxidized now only reachable via the Nginx proxy (http://<host>/, user: $PROXY_USER)"
+    sleep 2
+
+    info "Verifying Oxidized is no longer publicly reachable on port 8888..."
+    if (ss -tlnp 2>/dev/null || netstat -tlnp 2>/dev/null) | grep ":8888" | grep -qE '0\.0\.0\.0|\*:8888|:::8888'; then
+        warn "Oxidized still appears to be listening on ALL interfaces (0.0.0.0:8888), not just localhost."
+        warn "It may have been re-saved with a public bind address afterwards (e.g. via the admin page's Config editor)."
+        warn "Check: grep -E 'rest:|listen:' $CONFIG_DIR/config"
+    else
+        info "✓ Oxidized is bound to localhost only; only reachable via the Nginx proxy (http://<host>/, user: $PROXY_USER)"
+    fi
 else
     info "Skipping Nginx setup. Oxidized web GUI stays reachable directly on port 8888."
 fi
@@ -652,5 +679,7 @@ echo "  2. Log in with your admin credentials"
 echo "  3. Go to Settings → configure LibreNMS API (optional)"
 echo "  4. Add devices via Devices tab or sync from LibreNMS"
 echo ""
-echo "Documentation: https://github.com/ytti/oxidized"
+echo "Project:     https://github.com/Kintoyyy/oxidized-admin"
+echo "Credits:     https://github.com/ytti/oxidized + https://github.com/ytti/oxidized-web"
+echo "Inspired by: https://github.com/MrMime71/oxidized-configuration-manager-v1"
 echo ""
