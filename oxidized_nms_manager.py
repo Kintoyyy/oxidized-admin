@@ -1743,7 +1743,7 @@ DASHBOARD_TEMPLATE = '''<!DOCTYPE html>
 <body>
 <div class="shell">
 ''' + render_sidebar('dashboard') + '''
-<main class="main"><div class="page">
+<main class="main"><div class="page-full">
     <div class="stats-grid">
         <div class="stat-card">
             <div class="stat-label">Total Devices</div>
@@ -1783,23 +1783,23 @@ DASHBOARD_TEMPLATE = '''<!DOCTYPE html>
             <tbody>
                 {% for device in devices %}
                 <tr>
-                    <td>
+                    <td style="white-space: nowrap;">
                         <div><strong>{{ device.name }}</strong></div>
                         <div class="muted" style="font-family: ui-monospace, monospace; font-size: 12px;">{{ device.ip }}</div>
                     </td>
                     <td>{{ device.model or '-' }}</td>
-                    <td>{{ device.group or 'default' }}</td>
+                    <td style="white-space: nowrap;">{{ device.group or 'default' }}</td>
                     <td>
                         <span class="badge {{ 'badge-success' if device.status == 'success' else ('badge-destructive' if device.status == 'error' else 'badge-warning') }}">
                             {{ device.status or 'unknown' }}
                         </span>
                     </td>
-                    <td>{{ device.last_update or 'never' }}</td>
-                    <td>{{ device.mtime or 'unknown' }}</td>
+                    <td style="white-space: nowrap;">{{ device.last_update or 'never' }}</td>
+                    <td style="white-space: nowrap;">{{ device.mtime or 'unknown' }}</td>
                     <td>{{ device.total_failures if device.total_failures is not none else '-' }}</td>
                     <td>{{ device.failure_rate if device.failure_rate is not none else '-' }}</td>
                     <td>{{ device.avg_run_time if device.avg_run_time is not none else '-' }}</td>
-                    <td>{{ device.last_failure if device.last_failure is not none else 'never' }}</td>
+                    <td style="white-space: nowrap;">{{ device.last_failure if device.last_failure is not none else 'never' }}</td>
                     <td>
                         <div class="flex">
                             <a href="{{ url_for('device_detail', device_name=device.name) }}" class="btn btn-outline btn-sm">View</a>
