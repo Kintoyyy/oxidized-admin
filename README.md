@@ -41,12 +41,13 @@ You'll be prompted for the admin page install directory, Oxidized config directo
 1. Detects any existing Oxidized install — you can **skip** it (leave as-is), **nuke** it (reinstall the gems fresh, keeping existing backups/config), or cancel.
 2. If installing, creates the `oxidized` system user, grants it passwordless sudo, installs build dependencies, and installs the `oxidized`/`oxidized-web`/`oxidized-script` gems.
 3. Sets up an `oxidized.service` systemd unit running as that user, and restricts Oxidized's REST/web interface (port 8888) to `127.0.0.1` — the admin page always talks to it over localhost, so it's never exposed by default (see [Securing the Oxidized Web GUI](#securing-the-oxidized-web-gui) to expose it deliberately).
-4. Optionally installs Nginx as a reverse proxy for the **admin page** on port 80 (recommended — lets you reach it at `http://<host>/` instead of `http://<host>:5000`), and separately offers to expose the Oxidized web GUI itself on port 8888, either behind Nginx with basic auth for browser access, or bound directly for LibreNMS's built-in Oxidized widget (which talks to Oxidized's REST API directly and doesn't support basic auth).
-5. Always does a fresh `git clone` of this repo and overwrites the admin page files (`oxidized_nms_manager.py`, `requirements.txt`, any `.html` templates) in the install directory, initializes the database, and sets up the `oxidized-manager.service` systemd unit.
+4. Optionally installs Nginx as a reverse proxy for the **admin page** on port 80 (recommended — lets you reach it at `http://<host>/` instead of `http://<host>:5000`). When this is enabled, gunicorn is bound to `127.0.0.1:5000` and port 5000 is not opened in the firewall — Nginx is the only way in. If you decline, the admin page falls back to a direct wildcard bind on port 5000 instead, so it stays reachable.
+5. Separately offers to expose the Oxidized web GUI itself on port 8888 via Nginx, password-protected by default. If you say LibreNMS needs it (its built-in Oxidized widget talks to the REST API directly and doesn't support basic auth), the installer also allowlists just the LibreNMS host's IP to skip the password — everyone else still needs one (see [Securing the Oxidized Web GUI](#securing-the-oxidized-web-gui)).
+6. Always does a fresh `git clone` of this repo and overwrites the admin page files (`oxidized_nms_manager.py`, `requirements.txt`, any `.html` templates) in the install directory, initializes the database, and sets up the `oxidized-manager.service` systemd unit.
 
-That last step means **re-running the installer is also how you update the admin page** — it always pulls the latest code from git and replaces what's deployed, regardless of local edits. The Oxidized config file itself is left alone unless you choose "Nuke".
+That last step means **re-running the installer is also how you update the admin page** — it always pulls the latest code from git and replaces what's deployed, regardless of local edits. The Oxidized config file itself is left alone unless you choose "Nuke". Re-running it also cleans up sites left behind by older versions of this installer (see [Troubleshooting](#troubleshooting) if you're upgrading from one and port 80 is misbehaving).
 
-Open `http://<host>/` (or `http://<host>:5000` if you skipped the Nginx step) and log in with the admin credentials you set.
+Open `http://<host>/` (or `http://<host>:5000` if you declined the Nginx step) and log in with the admin credentials you set.
 
 ### Manual install
 
@@ -83,6 +84,8 @@ DEBUG                 # default: False
 - **Users** — manage accounts and view the audit log
 
 ### API
+
+Run these from the server itself (`localhost:5000` always works, whether or not Nginx is fronting the app), or replace `localhost:5000` with `<host>` if you're going through Nginx on port 80 from elsewhere:
 
 ```bash
 curl -u admin:password http://localhost:5000/api/devices
@@ -146,6 +149,23 @@ sudo nginx -t && sudo systemctl restart nginx
 sudo ufw allow 8888/tcp   # if UFW is active
 ```
 
+**Testing it:**
+
+```bash
+# From the LibreNMS host -- should succeed with no credentials if its IP was allowlisted
+curl -v http://<server-ip>:8888/nodes.json
+
+# From any other machine -- confirms everyone else still needs a password
+curl -i http://<server-ip>:8888/nodes.json                                   # expect 401
+curl -i -u <proxy-username>:<proxy-password> http://<server-ip>:8888/nodes.json  # expect 200 + JSON
+```
+
+If the first command still prompts for a password, double-check the IP nginx actually allowlisted matches the LibreNMS host's real outbound IP — NAT or a multi-homed LibreNMS server can make the source IP nginx sees different from the one you typed at the prompt:
+
+```bash
+grep allow /etc/nginx/sites-available/oxidized-web
+```
+
 ## Troubleshooting
 
 **Service won't start**
@@ -164,6 +184,12 @@ curl http://localhost:8888/nodes.json
 **LibreNMS sync failing**
 ```bash
 curl -H "X-Auth-Token: YOUR_TOKEN" http://<librenms-host>/api/v0/devices
+```
+
+**Port 80 asks for a password / shows 502 Bad Gateway after upgrading** — an installer from before this restructure named the port-80 site `oxidized` and pointed it at Oxidized (with basic auth) instead of the admin page. If that file is still enabled alongside the new `oxidized-admin` site, nginx silently keeps using whichever one loads first alphabetically (`oxidized` wins), so the old site keeps answering on port 80. Re-running the installer removes it automatically now, or fix it by hand:
+```bash
+sudo rm -f /etc/nginx/sites-enabled/oxidized /etc/nginx/sites-available/oxidized
+sudo nginx -t && sudo systemctl reload nginx
 ```
 
 **SSH test button disabled** → `pip install paramiko`
@@ -186,7 +212,10 @@ sudo rm /etc/sudoers.d/oxidized
 sudo systemctl daemon-reload
 
 # If you set up the Nginx proxy:
-sudo rm -f /etc/nginx/sites-enabled/oxidized /etc/nginx/sites-available/oxidized /etc/nginx/.htpasswd
+sudo rm -f /etc/nginx/sites-enabled/oxidized-admin /etc/nginx/sites-available/oxidized-admin
+sudo rm -f /etc/nginx/sites-enabled/oxidized-web /etc/nginx/sites-available/oxidized-web
+sudo rm -f /etc/nginx/sites-enabled/oxidized /etc/nginx/sites-available/oxidized   # legacy name, if present
+sudo rm -f /etc/nginx/.htpasswd
 sudo systemctl restart nginx
 
 # Also deletes all device backups/config and the oxidized user's data:
