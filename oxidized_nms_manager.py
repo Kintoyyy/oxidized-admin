@@ -973,31 +973,82 @@ def setup():
 # ROUTES - DASHBOARD
 # ============================================================================
 
+DASHBOARD_PER_PAGE = 25
+DEVICES_PER_PAGE = 25
+
 @app.route('/')
 @requires_auth
 def dashboard():
     """Main NOC dashboard."""
     oxidized_nodes = get_oxidized_nodes()
-    oxidized_stats = get_oxidized_stats()
 
-    # Enrich with metadata and LibreNMS data
+    # Build the lightweight full list first - no per-device network calls here,
+    # so this stays fast regardless of fleet size. Per-device enrichment (stats,
+    # last-changed) only happens below for the current page's devices.
+    all_devices = []
+    for node in oxidized_nodes:
+        all_devices.append({
+            'name': node.get('name'),
+            'ip': node.get('ip'),
+            'model': node.get('model'),
+            'group': node.get('group') or 'default',
+            'status': node.get('status'),
+            'last_update': node.get('time'),
+        })
+
+    # Summary stats reflect the whole fleet, regardless of search/filter/page.
+    stats = {
+        'total': len(all_devices),
+        'healthy': sum(1 for d in all_devices if d['status'] == 'success'),
+        'failed': sum(1 for d in all_devices if d['status'] == 'error'),
+        'pending': sum(1 for d in all_devices if d['status'] not in ('success', 'error'))
+    }
+    all_groups = sorted(set(d['group'] for d in all_devices))
+
+    search = request.args.get('q', '').strip()
+    status_filter = request.args.get('status', 'all')
+    group_filter = request.args.get('group', 'all')
+
+    filtered = all_devices
+    if search:
+        q = search.lower()
+        filtered = [d for d in filtered if q in (d['name'] or '').lower()
+                    or q in (d['ip'] or '').lower()
+                    or q in (d['model'] or '').lower()
+                    or q in (d['group'] or '').lower()]
+    if status_filter != 'all':
+        if status_filter == 'other':
+            filtered = [d for d in filtered if d['status'] not in ('success', 'error')]
+        else:
+            filtered = [d for d in filtered if d['status'] == status_filter]
+    if group_filter != 'all':
+        filtered = [d for d in filtered if d['group'] == group_filter]
+
+    total_count = len(filtered)
+    total_pages = max(1, (total_count + DASHBOARD_PER_PAGE - 1) // DASHBOARD_PER_PAGE)
+    try:
+        page = int(request.args.get('page', 1))
+    except ValueError:
+        page = 1
+    page = max(1, min(page, total_pages))
+    page_devices = filtered[(page - 1) * DASHBOARD_PER_PAGE: page * DASHBOARD_PER_PAGE]
+
+    # Expensive per-device enrichment - bounded to just this page, however large the fleet is.
+    oxidized_stats = get_oxidized_stats()
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
-
-    devices = []
-    for node in oxidized_nodes:
-        c.execute('SELECT * FROM device_metadata WHERE device_ip = ?', (node.get('ip'),))
+    for device in page_devices:
+        c.execute('SELECT * FROM device_metadata WHERE device_ip = ?', (device['ip'],))
         meta = c.fetchone()
-        node_stats = oxidized_stats.get(node.get('name'), {})
-        node_group = node.get('group') or 'default'
+        node_stats = oxidized_stats.get(device['name'], {})
 
         # /nodes.json doesn't include a usable "last changed" timestamp (that's only
         # on the single-node detail endpoint), so derive it from the newest entry in
         # this device's own version history instead - which is also more meaningful
         # (it only changes when the config actually differs, not just on every poll).
         last_changed = None
-        history = get_oxidized_node_history(node.get('name'), node_group)
+        history = get_oxidized_node_history(device['name'], device['group'])
         if history:
             newest = history[0]
             epoch = newest.get('epoch') if isinstance(newest, dict) else None
@@ -1009,33 +1060,25 @@ def dashboard():
             if last_changed is None:
                 last_changed = newest.get('date') if isinstance(newest, dict) else None
 
-        devices.append({
-            'name': node.get('name'),
-            'ip': node.get('ip'),
-            'model': node.get('model'),
-            'group': node_group,
-            'status': node.get('status'),
-            'last_update': node.get('time'),
-            'mtime': last_changed,
-            'metadata': dict(meta) if meta else {},
-            'total_failures': node_stats.get('total_failures'),
-            'failure_rate': node_stats.get('failure_rate'),
-            'avg_run_time': node_stats.get('avg_run_time'),
-            'last_failure': node_stats.get('last_failure')
-        })
+        device['metadata'] = dict(meta) if meta else {}
+        device['mtime'] = last_changed
+        device['total_failures'] = node_stats.get('total_failures')
+        device['failure_rate'] = node_stats.get('failure_rate')
+        device['avg_run_time'] = node_stats.get('avg_run_time')
+        device['last_failure'] = node_stats.get('last_failure')
     conn.close()
-    
-    # Summary stats
-    stats = {
-        'total': len(devices),
-        'healthy': sum(1 for d in devices if d['status'] == 'success'),
-        'failed': sum(1 for d in devices if d['status'] == 'error'),
-        'pending': sum(1 for d in devices if d['status'] not in ('success', 'error'))
-    }
-    
-    return render_template_string(DASHBOARD_TEMPLATE, 
-                                  devices=devices, 
+
+    return render_template_string(DASHBOARD_TEMPLATE,
+                                  devices=page_devices,
                                   stats=stats,
+                                  all_groups=all_groups,
+                                  search=search,
+                                  status_filter=status_filter,
+                                  group_filter=group_filter,
+                                  page=page,
+                                  total_pages=total_pages,
+                                  total_count=total_count,
+                                  per_page=DASHBOARD_PER_PAGE,
                                   oxidized_api=f'{OXIDIZED_API_URL}/nodes')
 
 @app.route('/api/devices')
@@ -1316,9 +1359,9 @@ def manage_devices():
             flash('Changes saved. Oxidized will pick up changes on next sync.', 'success')
         else:
             flash('Error saving changes', 'danger')
-        
+
         return redirect(url_for('manage_devices'))
-    
+
     # Get groups (and their default credentials, for autofill) for the dropdown
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -1333,8 +1376,35 @@ def manage_devices():
         for g in group_rows
     }
 
-    return render_template_string(DEVICE_MANAGEMENT_TEMPLATE, devices=devices, groups=groups,
-                                  model_groups=get_model_groups(), group_defaults=group_defaults)
+    all_groups = sorted(set((d.get('group') or 'default') for d in devices))
+
+    search = request.args.get('q', '').strip()
+    group_filter = request.args.get('group_filter', 'all')
+
+    filtered = devices
+    if search:
+        q = search.lower()
+        filtered = [d for d in filtered if q in (d.get('name') or '').lower()
+                    or q in (d.get('ip') or '').lower()
+                    or q in (d.get('model') or '').lower()
+                    or q in (d.get('group') or '').lower()]
+    if group_filter != 'all':
+        filtered = [d for d in filtered if (d.get('group') or 'default') == group_filter]
+
+    total_count = len(filtered)
+    total_pages = max(1, (total_count + DEVICES_PER_PAGE - 1) // DEVICES_PER_PAGE)
+    try:
+        page = int(request.args.get('page', 1))
+    except ValueError:
+        page = 1
+    page = max(1, min(page, total_pages))
+    page_devices = filtered[(page - 1) * DEVICES_PER_PAGE: page * DEVICES_PER_PAGE]
+
+    return render_template_string(DEVICE_MANAGEMENT_TEMPLATE, devices=page_devices, groups=groups,
+                                  model_groups=get_model_groups(), group_defaults=group_defaults,
+                                  all_groups=all_groups, search=search, group_filter=group_filter,
+                                  page=page, total_pages=total_pages, total_count=total_count,
+                                  per_page=DEVICES_PER_PAGE)
 
 @app.route('/config', methods=['GET', 'POST'])
 @requires_auth
@@ -1750,6 +1820,20 @@ table.table tbody tr:hover td { background: var(--accent); }
 .tab-content.active { display: block; }
 
 .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0.75rem; margin-bottom: 1.25rem; }
+
+.toolbar { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; margin-bottom: 1rem; }
+.toolbar input[type="text"], .toolbar input[type="search"] { width: 220px; }
+.toolbar select { width: auto; }
+.pagination { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-top: 1rem; flex-wrap: wrap; }
+.pagination .pages { display: flex; align-items: center; gap: 4px; }
+.pagination a, .pagination span.current {
+    display: inline-flex; align-items: center; justify-content: center;
+    min-width: 30px; height: 30px; padding: 0 8px; border-radius: var(--radius);
+    font-size: 13px; color: var(--muted-foreground); border: 1px solid var(--border);
+}
+.pagination a:hover { background: var(--accent); color: var(--foreground); }
+.pagination span.current { background: var(--primary); color: var(--primary-foreground); border-color: var(--primary); font-weight: 600; }
+.pagination .disabled { opacity: 0.4; pointer-events: none; }
 .stat-card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 1rem; }
 .stat-label { font-size: 11px; text-transform: uppercase; letter-spacing: .03em; color: var(--muted-foreground); margin-bottom: 6px; }
 .stat-value { font-size: 24px; font-weight: 700; }
@@ -1905,6 +1989,24 @@ DASHBOARD_TEMPLATE = '''<!DOCTYPE html>
         </div>
     </div>
 
+    <form method="GET" class="toolbar">
+        <input type="text" name="q" placeholder="Search name, IP, model, group..." value="{{ search }}">
+        <select name="status">
+            <option value="all" {% if status_filter == 'all' %}selected{% endif %}>All Statuses</option>
+            <option value="success" {% if status_filter == 'success' %}selected{% endif %}>Success</option>
+            <option value="error" {% if status_filter == 'error' %}selected{% endif %}>Error</option>
+            <option value="other" {% if status_filter == 'other' %}selected{% endif %}>Other</option>
+        </select>
+        <select name="group">
+            <option value="all" {% if group_filter == 'all' %}selected{% endif %}>All Groups</option>
+            {% for g in all_groups %}
+            <option value="{{ g }}" {% if group_filter == g %}selected{% endif %}>{{ g }}</option>
+            {% endfor %}
+        </select>
+        <button type="submit" class="btn btn-sm"><i class="bi bi-search"></i>Search</button>
+        <a href="{{ url_for('dashboard', page=page, q=search, status=status_filter, group=group_filter) }}" class="btn btn-outline btn-sm"><i class="bi bi-arrow-clockwise"></i>Refresh</a>
+    </form>
+
     <div class="table-wrap">
         <table class="table">
             <thead>
@@ -1951,10 +2053,34 @@ DASHBOARD_TEMPLATE = '''<!DOCTYPE html>
                     </td>
                 </tr>
                 {% else %}
-                <tr><td colspan="11">No devices found. Sync from LibreNMS or add one from the Devices page.</td></tr>
+                <tr><td colspan="11">No devices match your search/filters, or none are registered yet. Sync from LibreNMS or add one from the Devices page.</td></tr>
                 {% endfor %}
             </tbody>
         </table>
+    </div>
+
+    <div class="pagination">
+        <div class="muted" style="font-size: 13px;">
+            {% if total_count > 0 %}
+            Showing {{ (page - 1) * per_page + 1 }}-{{ [page * per_page, total_count] | min }} of {{ total_count }} devices
+            {% else %}
+            No devices to show
+            {% endif %}
+        </div>
+        <div class="pages">
+            {% if page > 1 %}
+            <a href="{{ url_for('dashboard', page=page-1, q=search, status=status_filter, group=group_filter) }}"><i class="bi bi-chevron-left"></i></a>
+            {% else %}
+            <span class="disabled"><i class="bi bi-chevron-left"></i></span>
+            {% endif %}
+            <span class="current">{{ page }}</span>
+            <span class="muted" style="font-size: 13px;">of {{ total_pages }}</span>
+            {% if page < total_pages %}
+            <a href="{{ url_for('dashboard', page=page+1, q=search, status=status_filter, group=group_filter) }}"><i class="bi bi-chevron-right"></i></a>
+            {% else %}
+            <span class="disabled"><i class="bi bi-chevron-right"></i></span>
+            {% endif %}
+        </div>
     </div>
 </div></main>
 </div>
@@ -2032,6 +2158,36 @@ DEVICE_DETAIL_TEMPLATE = '''<!DOCTYPE html>
     </div>
 
     <div id="history" class="tab-content">
+        <div class="card mb-2">
+            <div class="card-header"><div class="card-title"><i class="bi bi-file-diff"></i> Compare Versions</div></div>
+            <div class="card-content">
+                <div style="display: flex; gap: 1rem; align-items: flex-end; flex-wrap: wrap;">
+                    <div class="field" style="margin-bottom:0;">
+                        <label>Version</label>
+                        <select id="diff-select-a"></select>
+                    </div>
+                    <div class="field" style="margin-bottom:0;">
+                        <label>Compared against</label>
+                        <select id="diff-select-b"></select>
+                    </div>
+                    <button class="btn" onclick="compareDiffs()"><i class="bi bi-file-diff"></i>Get Diffs</button>
+                </div>
+            </div>
+        </div>
+
+        <div id="diff-content" class="mb-2">
+            <div class="grid-2">
+                <div>
+                    <div id="diff-label-old" class="muted" style="font-size: 12px; margin-bottom: 0.4rem;"></div>
+                    <div class="code-viewer" id="diff-old"></div>
+                </div>
+                <div>
+                    <div id="diff-label-new" class="muted" style="font-size: 12px; margin-bottom: 0.4rem;"></div>
+                    <div class="code-viewer" id="diff-new"></div>
+                </div>
+            </div>
+        </div>
+
         <div class="table-wrap">
             <table class="table">
                 <thead>
@@ -2058,36 +2214,6 @@ DEVICE_DETAIL_TEMPLATE = '''<!DOCTYPE html>
         <div id="version-content-actions" class="flex" style="display: none; margin-top: 0.5rem;">
             <button class="btn btn-outline btn-sm" onclick="rawView('version-content', '{{ device_name }}-version.conf')"><i class="bi bi-code-slash"></i>Raw</button>
             <button class="btn btn-outline btn-sm" onclick="downloadContent('version-content', '{{ device_name }}-version.conf')"><i class="bi bi-download"></i>Download</button>
-        </div>
-
-        <div class="card" style="margin-top: 1.5rem;">
-            <div class="card-header"><div class="card-title"><i class="bi bi-file-diff"></i> Compare Versions</div></div>
-            <div class="card-content">
-                <div style="display: flex; gap: 1rem; align-items: flex-end; flex-wrap: wrap;">
-                    <div class="field" style="margin-bottom:0;">
-                        <label>Version</label>
-                        <select id="diff-select-a"></select>
-                    </div>
-                    <div class="field" style="margin-bottom:0;">
-                        <label>Compared against</label>
-                        <select id="diff-select-b"></select>
-                    </div>
-                    <button class="btn" onclick="compareDiffs()"><i class="bi bi-file-diff"></i>Get Diffs</button>
-                </div>
-            </div>
-        </div>
-
-        <div id="diff-content">
-            <div class="grid-2">
-                <div>
-                    <div id="diff-label-old" class="muted" style="font-size: 12px; margin-bottom: 0.4rem;"></div>
-                    <div class="code-viewer" id="diff-old"></div>
-                </div>
-                <div>
-                    <div id="diff-label-new" class="muted" style="font-size: 12px; margin-bottom: 0.4rem;"></div>
-                    <div class="code-viewer" id="diff-new"></div>
-                </div>
-            </div>
         </div>
     </div>
 
@@ -2418,6 +2544,18 @@ DEVICE_MANAGEMENT_TEMPLATE = '''<!DOCTYPE html>
         </div>
     </div>
 
+    <form method="GET" class="toolbar">
+        <input type="text" name="q" placeholder="Search name, IP, model, group..." value="{{ search }}">
+        <select name="group_filter">
+            <option value="all" {% if group_filter == 'all' %}selected{% endif %}>All Groups</option>
+            {% for g in all_groups %}
+            <option value="{{ g }}" {% if group_filter == g %}selected{% endif %}>{{ g }}</option>
+            {% endfor %}
+        </select>
+        <button type="submit" class="btn btn-sm"><i class="bi bi-search"></i>Search</button>
+        <a href="{{ url_for('manage_devices', page=page, q=search, group_filter=group_filter) }}" class="btn btn-outline btn-sm"><i class="bi bi-arrow-clockwise"></i>Refresh</a>
+    </form>
+
     <div class="table-wrap">
         <table class="table">
             <thead>
@@ -2453,10 +2591,34 @@ DEVICE_MANAGEMENT_TEMPLATE = '''<!DOCTYPE html>
                     <td colspan="6"></td>
                 </tr>
                 {% else %}
-                <tr><td colspan="6">No devices yet. Click "+ Add Device" to add one.</td></tr>
+                <tr><td colspan="6">No devices match your search/filter, or none are registered yet. Click "+ Add Device" to add one.</td></tr>
                 {% endfor %}
             </tbody>
         </table>
+    </div>
+
+    <div class="pagination">
+        <div class="muted" style="font-size: 13px;">
+            {% if total_count > 0 %}
+            Showing {{ (page - 1) * per_page + 1 }}-{{ [page * per_page, total_count] | min }} of {{ total_count }} devices
+            {% else %}
+            No devices to show
+            {% endif %}
+        </div>
+        <div class="pages">
+            {% if page > 1 %}
+            <a href="{{ url_for('manage_devices', page=page-1, q=search, group_filter=group_filter) }}"><i class="bi bi-chevron-left"></i></a>
+            {% else %}
+            <span class="disabled"><i class="bi bi-chevron-left"></i></span>
+            {% endif %}
+            <span class="current">{{ page }}</span>
+            <span class="muted" style="font-size: 13px;">of {{ total_pages }}</span>
+            {% if page < total_pages %}
+            <a href="{{ url_for('manage_devices', page=page+1, q=search, group_filter=group_filter) }}"><i class="bi bi-chevron-right"></i></a>
+            {% else %}
+            <span class="disabled"><i class="bi bi-chevron-right"></i></span>
+            {% endif %}
+        </div>
     </div>
 </div></main>
 </div>
