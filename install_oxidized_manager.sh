@@ -579,6 +579,14 @@ if compgen -G "$CLONE_DIR/*.html" > /dev/null; then
     cp -f "$CLONE_DIR"/*.html "$INSTALL_DIR/"
 fi
 
+# Only the files above get copied out, not the .git directory, so the admin
+# page's Settings page has no way to tell what's actually deployed unless the
+# commit is recorded separately -- same mechanism the in-app "Update to
+# Latest Version" button uses.
+GIT_HASH=$(git -C "$CLONE_DIR" rev-parse --short HEAD 2>/dev/null || echo "unknown")
+GIT_DATE=$(git -C "$CLONE_DIR" log -1 --format=%cI 2>/dev/null || echo "")
+{ echo "hash=$GIT_HASH"; echo "date=$GIT_DATE"; } > "$INSTALL_DIR/.deployed_version"
+
 rm -rf "$CLONE_DIR"
 
 if id -u oxidized &> /dev/null; then

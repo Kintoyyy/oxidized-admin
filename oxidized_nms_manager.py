@@ -1486,6 +1486,37 @@ def api_logs_tail():
     return jsonify({'status': 'success', 'lines': lines, 'path': str(OXIDIZED_LOG_PATH)})
 
 APP_REPO_URL = 'https://github.com/Kintoyyy/oxidized-admin.git'
+# Deployed files are just copied out of a throwaway clone (no .git directory
+# ends up in the install dir), so the commit this install is running is
+# recorded here at install/update time -- otherwise there'd be no way to
+# tell which version is actually deployed.
+DEPLOYED_VERSION_FILE = Path(__file__).resolve().parent / '.deployed_version'
+
+def get_deployed_version():
+    """Read the git hash/date captured at install or update time, if any."""
+    info = {'hash': None, 'date': None}
+    try:
+        for line in DEPLOYED_VERSION_FILE.read_text().splitlines():
+            key, _, value = line.partition('=')
+            if key in info:
+                info[key] = value.strip() or None
+    except (FileNotFoundError, OSError):
+        pass
+    return info
+
+def _record_deployed_version(clone_dir):
+    """Best-effort: stash the cloned repo's commit hash/date next to the app."""
+    try:
+        h = subprocess.run(['git', '-C', clone_dir, 'rev-parse', '--short', 'HEAD'],
+                            capture_output=True, text=True, timeout=10)
+        d = subprocess.run(['git', '-C', clone_dir, 'log', '-1', '--format=%cI'],
+                            capture_output=True, text=True, timeout=10)
+        commit_hash = h.stdout.strip() if h.returncode == 0 else 'unknown'
+        commit_date = d.stdout.strip() if d.returncode == 0 else ''
+        DEPLOYED_VERSION_FILE.write_text(f'hash={commit_hash}\ndate={commit_date}\n')
+        return commit_hash
+    except Exception:
+        return None
 
 @app.route('/api/app/update', methods=['POST'])
 @requires_auth
@@ -1496,6 +1527,7 @@ def api_app_update():
     never touches the Oxidized config, gems, or the oxidized.service itself."""
     install_dir = Path(__file__).resolve().parent
     clone_dir = tempfile.mkdtemp(prefix='oxidized-admin-update-')
+    new_hash = None
     try:
         result = subprocess.run(
             ['git', 'clone', '--depth', '1', APP_REPO_URL, clone_dir],
@@ -1516,6 +1548,8 @@ def api_app_update():
             if pip_bin.exists():
                 subprocess.run([str(pip_bin), 'install', '-q', '-r', str(install_dir / 'requirements.txt')],
                                capture_output=True, text=True, timeout=120)
+
+        new_hash = _record_deployed_version(clone_dir)
     except subprocess.TimeoutExpired:
         return jsonify({'status': 'error', 'message': 'Update timed out'}), 500
     except Exception as e:
@@ -1523,14 +1557,15 @@ def api_app_update():
     finally:
         shutil.rmtree(clone_dir, ignore_errors=True)
 
-    log_audit('app_updated', 'oxidized_manager')
+    log_audit('app_updated', 'oxidized_manager', details=new_hash)
 
     def _delayed_restart():
         time.sleep(1)
         subprocess.run(['sudo', 'systemctl', 'restart', 'oxidized-manager'])
     threading.Thread(target=_delayed_restart, daemon=True).start()
 
-    return jsonify({'status': 'success', 'message': 'Updated from GitHub. Restarting the admin service now - reload this page in a few seconds.'})
+    version_note = f' Now at {new_hash}.' if new_hash and new_hash != 'unknown' else ''
+    return jsonify({'status': 'success', 'message': f'Updated from GitHub.{version_note} Restarting the admin service now - reload this page in a few seconds.'})
 
 @app.route('/api/oxidized/restart', methods=['POST'])
 @requires_auth
@@ -1581,6 +1616,26 @@ def api_oxidized_test():
         result['error'] = f'{type(e).__name__}: {e}'
     return jsonify(result)
 
+@app.route('/api/github/test', methods=['POST'])
+@requires_auth
+@requires_admin
+def api_github_test():
+    """Push a throwaway commit to the configured GitHub repo, to verify the
+    integration end-to-end without waiting for a real device fetch to resolve."""
+    if not HAS_GITPYTHON:
+        return jsonify({'status': 'error', 'message': 'GitPython not installed'}), 400
+    if not github_client.enabled:
+        return jsonify({'status': 'error', 'message': 'GitHub sync is not enabled - fill in the repo URL, token, and Save Settings first'}), 400
+
+    test_content = f'Oxidized Manager connectivity test at {datetime.now().isoformat()}\n'
+    ok = github_client.push_backup('_connectivity_test', test_content)
+    log_audit('github_push_test', 'settings', details='success' if ok else 'failed')
+    if ok:
+        return jsonify({'status': 'success',
+                         'message': f'Pushed a test commit to branch "{github_client.branch}" - check the "_connectivity_test" folder in your repo.'})
+    return jsonify({'status': 'error',
+                     'message': 'Push failed - check server logs for the git error: sudo journalctl -u oxidized-manager | grep -i github'}), 500
+
 @app.route('/settings', methods=['GET', 'POST'])
 @requires_auth
 @requires_admin
@@ -1627,12 +1682,14 @@ def settings():
         'has_gitpython': HAS_GITPYTHON,
         'has_paramiko': HAS_PARAMIKO
     }
-    
+
     oxidized_status = check_oxidized_installed()
-    
-    return render_template_string(SETTINGS_TEMPLATE, 
+    deployed_version = get_deployed_version()
+
+    return render_template_string(SETTINGS_TEMPLATE,
                                   settings=settings_data,
-                                  oxidized_status=oxidized_status)
+                                  oxidized_status=oxidized_status,
+                                  deployed_version=deployed_version)
 
 @app.route('/users', methods=['GET', 'POST'])
 @requires_auth
@@ -3043,6 +3100,13 @@ SETTINGS_TEMPLATE = '''<!DOCTYPE html>
     <div class="card mb-2">
         <div class="card-header"><div class="card-title"><i class="bi bi-cloud-arrow-down"></i> Admin Page</div></div>
         <div class="card-content">
+            <div class="help-text mb-2">
+                {% if deployed_version.hash %}
+                Current version: <code>{{ deployed_version.hash }}</code>{% if deployed_version.date %} ({{ deployed_version.date }}){% endif %}
+                {% else %}
+                Current version: unknown (not installed/updated via git, or an install from before version tracking was added)
+                {% endif %}
+            </div>
             <div class="flex">
                 <button type="button" class="btn btn-outline btn-sm" id="update-app-btn" onclick="updateApp()"><i class="bi bi-cloud-arrow-down"></i>Update to Latest Version</button>
                 <span id="update-app-result" style="font-size: 13px;"></span>
@@ -3123,6 +3187,12 @@ SETTINGS_TEMPLATE = '''<!DOCTYPE html>
         <button type="submit" class="btn"><i class="bi bi-check-lg"></i>Save Settings</button>
     </form>
 
+    <div class="flex mb-2" style="flex-wrap: wrap;">
+        <button type="button" class="btn btn-outline btn-sm" id="test-github-btn" onclick="testGithubPush()"><i class="bi bi-github"></i>Test GitHub Push</button>
+        <span id="test-github-result" style="font-size: 13px;"></span>
+    </div>
+    <div class="help-text mb-2">Pushes a throwaway test commit right now, using whatever's currently saved above (save first if you just changed something) - a quick way to check the repo URL/token/branch without waiting for a real device backup.</div>
+
     <div class="card mb-2" style="margin-top: 1.25rem;">
         <div class="card-header"><div class="card-title"><i class="bi bi-info-circle"></i> About</div></div>
         <div class="card-content">
@@ -3190,6 +3260,32 @@ SETTINGS_TEMPLATE = '''<!DOCTYPE html>
                     result.innerHTML = '<i class="bi bi-x-circle-fill"></i> ' + data.message;
                     btn.disabled = false;
                 }
+            })
+            .catch(err => {
+                result.style.color = '#f87171';
+                result.innerHTML = '<i class="bi bi-x-circle-fill"></i> ' + err;
+                btn.disabled = false;
+            });
+    }
+
+    function testGithubPush() {
+        var btn = document.getElementById('test-github-btn');
+        var result = document.getElementById('test-github-result');
+        btn.disabled = true;
+        result.style.color = '#cbd5e1';
+        result.innerHTML = '<i class="bi bi-hourglass-split"></i> Pushing...';
+
+        fetch('{{ url_for("api_github_test") }}', { method: 'POST' })
+            .then(response => response.json().then(data => ({ ok: response.ok, data: data })))
+            .then(({ ok, data }) => {
+                if (ok && data.status === 'success') {
+                    result.style.color = '#4ade80';
+                    result.innerHTML = '<i class="bi bi-check-circle-fill"></i> ' + data.message;
+                } else {
+                    result.style.color = '#f87171';
+                    result.innerHTML = '<i class="bi bi-x-circle-fill"></i> ' + data.message;
+                }
+                btn.disabled = false;
             })
             .catch(err => {
                 result.style.color = '#f87171';
