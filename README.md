@@ -86,7 +86,11 @@ Mirrors Oxidized's **own** git repository (the one it already maintains via `out
 Requires `output: git` with `single_repo: true` in the Oxidized config (the installer's default template already sets this up).
 
 1. **Create a repo on GitHub** to hold the mirror (private is recommended) — initialize it with a README or any first commit, so its default branch exists.
-2. **Generate a personal access token** with push access to that repo: on GitHub, Settings → Developer settings → Personal access tokens. A classic token needs the `repo` scope; a fine-grained token needs Read and Write access to "Contents" on that repo.
+2. **Generate a fine-grained personal access token** (Settings → Developer settings → Personal access tokens → Fine-grained tokens → Generate new token) scoped to just that repo:
+   - **Resource owner** — the account/org that owns the repo
+   - **Repository access** → "Only select repositories" → pick the repo
+   - **Permissions → Repository permissions → Contents** → **Read and write** (this is the only permission needed; `Metadata: Read-only` is auto-included and can't be changed)
+   - A classic token works too if you'd rather (needs the `repo` scope), but fine-grained is recommended since it can't touch any other repo.
 3. In this app, go to **Settings → GitHub Integration** and fill in:
    - **GitHub Repository URL** — the HTTPS clone URL, e.g. `https://github.com/<user>/oxidized-backups.git` (not the SSH form — the token is embedded into this URL for auth)
    - **GitHub Personal Access Token** — the token from step 2
@@ -218,10 +222,14 @@ sudo nginx -t && sudo systemctl reload nginx
 
 **GitHub integration disabled** → `pip install GitPython`
 
-**Backups not showing up on GitHub** — first click **Test GitHub Push** in Settings to check the repo URL/token/branch work at all, independent of any device. If that succeeds but real device backups still aren't appearing, remember a push only happens when someone opens the device's page after Oxidized finishes fetching (see [Backing Up to GitHub](#backing-up-to-github)) — open that device's page. If the test button itself fails, check the logs for the actual git error (bad token, wrong branch, repo doesn't exist yet):
+**Backups not showing up on GitHub** — first click **Test GitHub Push** in Settings to check the repo URL/token/branch work at all, independent of any device. If that succeeds but real device backups still aren't appearing, remember a push only happens when someone opens the device's page after Oxidized finishes fetching (see [Backing Up to GitHub](#backing-up-to-github)) — open that device's page. If the test button itself fails, check the logs for the actual git error:
 ```bash
-sudo journalctl -u oxidized-manager | grep -i "GitHub push error\|GitHub repo init error"
+sudo journalctl -u oxidized-manager | grep -i "GitHub push error"
 ```
+
+- **`403` on the push/clone step** — the fine-grained token's **Contents** permission isn't actually set to Read and write, or the repo isn't included in its Repository access list. Open the token's settings page on GitHub and check both.
+- **`could not read Password ... No such device or address`** — an older symptom of the app embedding the token without a username; if you still see this, you're running a version from before that was fixed and should update.
+- Sanity-check the token completely outside the app: `curl -i -H "Authorization: Bearer <token>" https://api.github.com/repos/<user>/<repo>` should return `200` with repo JSON.
 
 **Database issues**
 ```bash
